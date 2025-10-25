@@ -1,0 +1,269 @@
+app:
+  name: microservices-mesh
+  namespaces:
+    - public
+    - internal
+    - data
+
+services:
+  # Public-facing services
+  - name: api-gateway
+    namespace: public
+    replicas: 3
+    protocols: [http, grpc]
+    upstreams: [user-service, content-service, analytics-service]
+    ingress:
+      enabled: true
+      host: api.local
+      tls: true
+      paths:
+        - /api/v1
+    behavior:
+      latency: "5-15ms"
+    resources:
+      requests:
+        cpu: "5m"
+        memory: "16Mi"
+      limits:
+        cpu: "10m"
+        memory: "32Mi"
+
+  - name: web-frontend
+    namespace: public
+    replicas: 4
+    protocols: [http]
+    upstreams: [api-gateway]
+    ingress:
+      enabled: true
+      host: app.local
+      tls: true
+    behavior:
+      latency: "10-25ms"
+    resources:
+      requests:
+        cpu: "5m"
+        memory: "12Mi"
+      limits:
+        cpu: "10m"
+        memory: "24Mi"
+
+  # Internal services
+  - name: user-service
+    namespace: internal
+    replicas: 3
+    protocols: [grpc]
+    upstreams: [user-db, cache-service, auth-service]
+    behavior:
+      latency: "20-80ms"
+      errorRate: 0.01
+    resources:
+      requests:
+        cpu: "8m"
+        memory: "24Mi"
+      limits:
+        cpu: "15m"
+        memory: "48Mi"
+
+  - name: content-service
+    namespace: internal
+    replicas: 4
+    protocols: [http, grpc]
+    upstreams: [content-db, media-service, cache-service]
+    behavior:
+      latency: "30-120ms"
+      errorRate: 0.015
+    resources:
+      requests:
+        cpu: "10m"
+        memory: "32Mi"
+      limits:
+        cpu: "20m"
+        memory: "64Mi"
+
+  - name: analytics-service
+    namespace: internal
+    replicas: 2
+    protocols: [grpc]
+    upstreams: [analytics-db, metrics-service]
+    behavior:
+      latency: "50-200ms"
+    resources:
+      requests:
+        cpu: "12m"
+        memory: "40Mi"
+      limits:
+        cpu: "25m"
+        memory: "80Mi"
+
+  - name: auth-service
+    namespace: internal
+    replicas: 3
+    protocols: [grpc]
+    upstreams: [user-db]
+    behavior:
+      latency: "10-40ms"
+      errorRate: 0.005
+    resources:
+      requests:
+        cpu: "6m"
+        memory: "16Mi"
+      limits:
+        cpu: "12m"
+        memory: "32Mi"
+
+  - name: media-service
+    namespace: internal
+    replicas: 2
+    protocols: [http]
+    upstreams: [media-storage]
+    behavior:
+      latency: "100-500ms"
+    resources:
+      requests:
+        cpu: "8m"
+        memory: "24Mi"
+      limits:
+        cpu: "25m"
+        memory: "80Mi"
+
+  - name: metrics-service
+    namespace: internal
+    replicas: 2
+    protocols: [http, grpc]
+    upstreams: [metrics-db]
+    behavior:
+      latency: "15-60ms"
+    resources:
+      requests:
+        cpu: "10m"
+        memory: "20Mi"
+      limits:
+        cpu: "20m"
+        memory: "40Mi"
+
+  - name: notification-service
+    namespace: internal
+    replicas: 2
+    protocols: [grpc]
+    upstreams: [user-service]
+    behavior:
+      latency: "30-150ms"
+    resources:
+      requests:
+        cpu: "6m"
+        memory: "16Mi"
+      limits:
+        cpu: "12m"
+        memory: "32Mi"
+
+  - name: cache-service
+    namespace: internal
+    replicas: 3
+    protocols: [http]
+    behavior:
+      latency: "1-10ms"
+    resources:
+      requests:
+        cpu: "8m"
+        memory: "24Mi"
+      limits:
+        cpu: "32m"
+        memory: "128Mi"
+
+  # Data layer
+  - name: user-db
+    namespace: data
+    type: StatefulSet
+    replicas: 1
+    protocols: [http]
+    storage:
+      size: 10Gi
+    behavior:
+      latency: "5-30ms"
+    resources:
+      requests:
+        cpu: "15m"
+        memory: "64Mi"
+      limits:
+        cpu: "40m"
+        memory: "128Mi"
+
+  - name: content-db
+    namespace: data
+    type: StatefulSet
+    replicas: 1
+    protocols: [http]
+    storage:
+      size: 20Gi
+    behavior:
+      latency: "10-50ms"
+    resources:
+      requests:
+        cpu: "15m"
+        memory: "64Mi"
+      limits:
+        cpu: "40m"
+        memory: "128Mi"
+
+  - name: analytics-db
+    namespace: data
+    type: StatefulSet
+    replicas: 1
+    protocols: [http]
+    storage:
+      size: 50Gi
+    behavior:
+      latency: "20-100ms"
+    resources:
+      requests:
+        cpu: "25m"
+        memory: "128Mi"
+      limits:
+        cpu: "100m"
+        memory: "256Mi"
+
+  - name: metrics-db
+    namespace: data
+    type: StatefulSet
+    replicas: 1
+    protocols: [http]
+    storage:
+      size: 30Gi
+    behavior:
+      latency: "15-80ms"
+    resources:
+      requests:
+        cpu: "15m"
+        memory: "64Mi"
+      limits:
+        cpu: "40m"
+        memory: "128Mi"
+
+  - name: media-storage
+    namespace: data
+    type: StatefulSet
+    replicas: 1
+    protocols: [http]
+    storage:
+      size: 100Gi
+    behavior:
+      latency: "50-300ms"
+    resources:
+      requests:
+        cpu: "8m"
+        memory: "24Mi"
+      limits:
+        cpu: "30m"
+        memory: "96Mi"
+
+traffic:
+  - name: api-load
+    target: api-gateway
+    rate: "200/s"
+    pattern: spiky
+
+  - name: web-load
+    target: web-frontend
+    rate: "150/s"
+    pattern: diurnal
+

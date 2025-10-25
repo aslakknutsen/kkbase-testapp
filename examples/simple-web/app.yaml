@@ -1,0 +1,65 @@
+app:
+  name: simple-web
+  namespaces:
+    - simple-web
+
+services:
+  - name: frontend
+    namespace: simple-web
+    replicas: 2
+    protocols: [http]
+    upstreams: [api]
+    ingress:
+      enabled: true
+      host: web.local
+      tls: true
+    behavior:
+      latency: "5-20ms"
+    resources:
+      requests:
+        cpu: "10m"
+        memory: "32Mi"
+      limits:
+        cpu: "20m"
+        memory: "64Mi"
+
+  - name: api
+    namespace: simple-web
+    replicas: 2
+    protocols: [http]
+    upstreams: [database]
+    behavior:
+      latency: "10-50ms"
+      errorRate: 0.02
+    resources:
+      requests:
+        cpu: "10m"
+        memory: "32Mi"
+      limits:
+        cpu: "30m"
+        memory: "64Mi"
+
+  - name: database
+    type: StatefulSet
+    namespace: simple-web
+    replicas: 1
+    protocols: [http]
+    storage:
+      size: 1Gi
+    behavior:
+      latency: "5-20ms"
+      cpu: "200m"
+    resources:
+      requests:
+        cpu: "20m"
+        memory: "64Mi"
+      limits:
+        cpu: "50m"
+        memory: "128Mi"
+
+traffic:
+  - name: load-gen
+    target: frontend
+    rate: "50/s"
+    pattern: steady
+

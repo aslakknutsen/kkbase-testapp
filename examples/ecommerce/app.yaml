@@ -1,0 +1,155 @@
+app:
+  name: ecommerce
+  namespaces:
+    - frontend
+    - orders
+    - products
+    - payments
+
+services:
+  # Frontend namespace
+  - name: web
+    namespace: frontend
+    replicas: 3
+    protocols: [http]
+    upstreams: [order-api, product-api]
+    ingress:
+      enabled: true
+      host: shop.local
+      tls: true
+      paths:
+        - /
+        - /products
+        - /orders
+    behavior:
+      latency: "10-30ms"
+    resources:
+      requests:
+        cpu: "100m"
+        memory: "128Mi"
+      limits:
+        cpu: "300m"
+        memory: "384Mi"
+
+  # Orders namespace
+  - name: order-api
+    namespace: orders
+    replicas: 3
+    protocols: [grpc]
+    upstreams: [product-api, payment-api, order-db]
+    behavior:
+      latency: "20-100ms"
+      errorRate: 0.01
+    resources:
+      requests:
+        cpu: "200m"
+        memory: "256Mi"
+      limits:
+        cpu: "500m"
+        memory: "512Mi"
+
+  - name: order-db
+    namespace: orders
+    type: StatefulSet
+    replicas: 1
+    protocols: [http]
+    storage:
+      size: 5Gi
+    behavior:
+      latency: "5-30ms"
+    resources:
+      requests:
+        cpu: "300m"
+        memory: "512Mi"
+      limits:
+        cpu: "1000m"
+        memory: "1Gi"
+
+  # Products namespace
+  - name: product-api
+    namespace: products
+    replicas: 3
+    protocols: [http, grpc]
+    upstreams: [product-db, product-cache]
+    behavior:
+      latency: "15-80ms"
+      errorRate: 0.02
+    resources:
+      requests:
+        cpu: "150m"
+        memory: "192Mi"
+      limits:
+        cpu: "400m"
+        memory: "448Mi"
+
+  - name: product-db
+    namespace: products
+    type: StatefulSet
+    replicas: 1
+    protocols: [http]
+    storage:
+      size: 10Gi
+    behavior:
+      latency: "10-50ms"
+    resources:
+      requests:
+        cpu: "300m"
+        memory: "512Mi"
+      limits:
+        cpu: "1000m"
+        memory: "1Gi"
+
+  - name: product-cache
+    namespace: products
+    replicas: 2
+    protocols: [http]
+    behavior:
+      latency: "1-5ms"
+    resources:
+      requests:
+        cpu: "100m"
+        memory: "256Mi"
+      limits:
+        cpu: "200m"
+        memory: "512Mi"
+
+  # Payments namespace
+  - name: payment-api
+    namespace: payments
+    replicas: 2
+    protocols: [grpc]
+    upstreams: [payment-db]
+    behavior:
+      latency: "50-200ms"
+      errorRate: 0.005
+    resources:
+      requests:
+        cpu: "200m"
+        memory: "256Mi"
+      limits:
+        cpu: "500m"
+        memory: "512Mi"
+
+  - name: payment-db
+    namespace: payments
+    type: StatefulSet
+    replicas: 1
+    protocols: [http]
+    storage:
+      size: 2Gi
+    behavior:
+      latency: "5-25ms"
+    resources:
+      requests:
+        cpu: "200m"
+        memory: "384Mi"
+      limits:
+        cpu: "800m"
+        memory: "768Mi"
+
+traffic:
+  - name: web-load
+    target: web
+    rate: "100/s"
+    pattern: diurnal
+

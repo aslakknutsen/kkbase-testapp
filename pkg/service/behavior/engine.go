@@ -1,0 +1,710 @@
+package behavior
+
+import (
+	"context"
+	"fmt"
+	"math"
+	"math/rand"
+	"runtime"
+	"strconv"
+	"strings"
+	"time"
+)
+
+// Behavior represents parsed behavior directives
+type Behavior struct {
+	Latency      *LatencyBehavior
+	Error        *ErrorBehavior
+	CPU          *CPUBehavior
+	Memory       *MemoryBehavior
+	CustomParams map[string]string
+}
+
+// ServiceBehavior represents a behavior targeted at a specific service
+type ServiceBehavior struct {
+	Service  string    // Target service name (empty = applies to all)
+	Behavior *Behavior // The actual behavior
+}
+
+// BehaviorChain represents multiple behaviors that can target different services
+type BehaviorChain struct {
+	Behaviors []ServiceBehavior
+}
+
+// ForService returns the behavior applicable to the given service name
+func (bc *BehaviorChain) ForService(serviceName string) *Behavior {
+	var specificBehavior *Behavior
+	var globalBehavior *Behavior
+
+	for _, sb := range bc.Behaviors {
+		if sb.Service == serviceName {
+			// Found behavior specifically for this service
+			if specificBehavior == nil {
+				specificBehavior = sb.Behavior
+			} else {
+				// Merge multiple behaviors for same service
+				specificBehavior = mergeBehaviors(specificBehavior, sb.Behavior)
+			}
+		} else if sb.Service == "" {
+			// Global behavior (no service prefix)
+			if globalBehavior == nil {
+				globalBehavior = sb.Behavior
+			} else {
+				globalBehavior = mergeBehaviors(globalBehavior, sb.Behavior)
+			}
+		}
+	}
+
+	// Specific behavior takes precedence over global
+	if specificBehavior != nil {
+		return specificBehavior
+	}
+	return globalBehavior
+}
+
+// String returns the behavior chain as a string for propagation
+func (bc *BehaviorChain) String() string {
+	if len(bc.Behaviors) == 0 {
+		return ""
+	}
+
+	var parts []string
+	for _, sb := range bc.Behaviors {
+		behaviorStr := sb.Behavior.String()
+		if behaviorStr == "" {
+			continue
+		}
+
+		if sb.Service != "" {
+			parts = append(parts, fmt.Sprintf("%s:%s", sb.Service, behaviorStr))
+		} else {
+			parts = append(parts, behaviorStr)
+		}
+	}
+
+	return strings.Join(parts, ",")
+}
+
+// String returns the behavior as a string
+func (b *Behavior) String() string {
+	var parts []string
+
+	if b.Latency != nil {
+		if b.Latency.Type == "fixed" {
+			parts = append(parts, fmt.Sprintf("latency=%s", b.Latency.Value))
+		} else {
+			parts = append(parts, fmt.Sprintf("latency=%s-%s", b.Latency.Min, b.Latency.Max))
+		}
+	}
+
+	if b.Error != nil && b.Error.Prob > 0 {
+		if b.Error.Rate != 500 {
+			parts = append(parts, fmt.Sprintf("error=%v,code=%d", b.Error.Prob, b.Error.Rate))
+		} else {
+			parts = append(parts, fmt.Sprintf("error=%v", b.Error.Prob))
+		}
+	}
+
+	if b.CPU != nil {
+		cpuStr := fmt.Sprintf("cpu=%s", b.CPU.Pattern)
+		if b.CPU.Duration > 0 {
+			cpuStr += fmt.Sprintf(":%s", b.CPU.Duration)
+			if b.CPU.Intensity > 0 && b.CPU.Intensity != 80 { // 80 is default
+				cpuStr += fmt.Sprintf(":%d", b.CPU.Intensity)
+			}
+		}
+		parts = append(parts, cpuStr)
+	}
+
+	if b.Memory != nil {
+		memStr := ""
+		if strings.HasPrefix(b.Memory.Pattern, "leak") {
+			memStr = fmt.Sprintf("memory=%s", b.Memory.Pattern)
+			if b.Memory.Duration > 0 {
+				memStr += fmt.Sprintf(":%s", b.Memory.Duration)
+			}
+		} else {
+			memStr = fmt.Sprintf("memory=%d", b.Memory.Amount)
+		}
+		parts = append(parts, memStr)
+	}
+
+	// Include custom parameters
+	if len(b.CustomParams) > 0 {
+		for key, value := range b.CustomParams {
+			parts = append(parts, fmt.Sprintf("%s=%s", key, value))
+		}
+	}
+
+	return strings.Join(parts, ",")
+}
+
+// mergeBehaviors combines two behaviors
+func mergeBehaviors(b1, b2 *Behavior) *Behavior {
+	merged := &Behavior{
+		CustomParams: make(map[string]string),
+	}
+
+	if b2.Latency != nil {
+		merged.Latency = b2.Latency
+	} else if b1.Latency != nil {
+		merged.Latency = b1.Latency
+	}
+
+	if b2.Error != nil {
+		merged.Error = b2.Error
+	} else if b1.Error != nil {
+		merged.Error = b1.Error
+	}
+
+	if b2.CPU != nil {
+		merged.CPU = b2.CPU
+	} else if b1.CPU != nil {
+		merged.CPU = b1.CPU
+	}
+
+	if b2.Memory != nil {
+		merged.Memory = b2.Memory
+	} else if b1.Memory != nil {
+		merged.Memory = b1.Memory
+	}
+
+	// Merge custom parameters (b2 overrides b1)
+	for k, v := range b1.CustomParams {
+		merged.CustomParams[k] = v
+	}
+	for k, v := range b2.CustomParams {
+		merged.CustomParams[k] = v
+	}
+
+	return merged
+}
+
+// LatencyBehavior controls request latency
+type LatencyBehavior struct {
+	Type  string // "fixed", "range", "percentile"
+	Min   time.Duration
+	Max   time.Duration
+	Value time.Duration
+}
+
+// ErrorBehavior controls error injection
+type ErrorBehavior struct {
+	Rate int     // HTTP status code to return
+	Prob float64 // Probability (0.0-1.0)
+}
+
+// CPUBehavior controls CPU usage patterns
+type CPUBehavior struct {
+	Pattern   string // "spike", "steady", "ramp"
+	Duration  time.Duration
+	Intensity int // Percentage 0-100
+}
+
+// MemoryBehavior controls memory usage patterns
+type MemoryBehavior struct {
+	Pattern  string // "leak-slow", "leak-fast", "steady"
+	Amount   int64  // Bytes to allocate
+	Duration time.Duration
+}
+
+// Parse parses a behavior string into a Behavior struct
+// Format: "latency=100ms,error=503:0.1,cpu=spike:5s,memory=leak-slow:10m"
+func Parse(behaviorStr string) (*Behavior, error) {
+	if behaviorStr == "" {
+		return &Behavior{CustomParams: make(map[string]string)}, nil
+	}
+
+	b := &Behavior{
+		CustomParams: make(map[string]string),
+	}
+
+	parts := strings.Split(behaviorStr, ",")
+	for _, part := range parts {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+
+		kv := strings.SplitN(part, "=", 2)
+		if len(kv) != 2 {
+			continue
+		}
+
+		key := strings.TrimSpace(kv[0])
+		value := strings.TrimSpace(kv[1])
+
+		switch key {
+		case "latency":
+			latency, err := parseLatency(value)
+			if err != nil {
+				return nil, fmt.Errorf("invalid latency: %w", err)
+			}
+			b.Latency = latency
+
+		case "error":
+			errorBehavior, err := parseError(value)
+			if err != nil {
+				return nil, fmt.Errorf("invalid error: %w", err)
+			}
+			b.Error = errorBehavior
+
+		case "cpu":
+			cpu, err := parseCPU(value)
+			if err != nil {
+				return nil, fmt.Errorf("invalid cpu: %w", err)
+			}
+			b.CPU = cpu
+
+		case "memory":
+			mem, err := parseMemory(value)
+			if err != nil {
+				return nil, fmt.Errorf("invalid memory: %w", err)
+			}
+			b.Memory = mem
+
+		default:
+			b.CustomParams[key] = value
+		}
+	}
+
+	return b, nil
+}
+
+// ParseChain parses a behavior chain that can target specific services
+// Syntax: "service1:latency=100ms,service2:error=0.5,latency=50ms"
+// - "service1:latency=100ms" - applies only to service1
+// - "latency=50ms" - applies to all services (no prefix)
+func ParseChain(behaviorStr string) (*BehaviorChain, error) {
+	if behaviorStr == "" {
+		return &BehaviorChain{Behaviors: []ServiceBehavior{}}, nil
+	}
+
+	chain := &BehaviorChain{
+		Behaviors: []ServiceBehavior{},
+	}
+
+	// Split by comma, but need to handle service:key=value format
+	// Strategy: Look for patterns like "service:" or "key="
+	var currentService string
+	var currentBehaviorParts []string
+
+	parts := strings.Split(behaviorStr, ",")
+	for _, part := range parts {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+
+		// Check if this part has a service prefix (contains : before =)
+		colonPos := strings.Index(part, ":")
+		equalsPos := strings.Index(part, "=")
+
+		if colonPos > 0 && (equalsPos < 0 || colonPos < equalsPos) {
+			// This is a service prefix: "service:latency=100ms"
+			// Save previous behavior if any
+			if len(currentBehaviorParts) > 0 {
+				b, err := Parse(strings.Join(currentBehaviorParts, ","))
+				if err != nil {
+					return nil, err
+				}
+				chain.Behaviors = append(chain.Behaviors, ServiceBehavior{
+					Service:  currentService,
+					Behavior: b,
+				})
+				currentBehaviorParts = nil
+			}
+
+			// Extract service name and behavior
+			serviceName := strings.TrimSpace(part[:colonPos])
+			behaviorPart := strings.TrimSpace(part[colonPos+1:])
+
+			currentService = serviceName
+			if behaviorPart != "" {
+				currentBehaviorParts = append(currentBehaviorParts, behaviorPart)
+			}
+		} else {
+			// This is a regular behavior part
+			currentBehaviorParts = append(currentBehaviorParts, part)
+		}
+	}
+
+	// Don't forget the last behavior
+	if len(currentBehaviorParts) > 0 {
+		b, err := Parse(strings.Join(currentBehaviorParts, ","))
+		if err != nil {
+			return nil, err
+		}
+		chain.Behaviors = append(chain.Behaviors, ServiceBehavior{
+			Service:  currentService,
+			Behavior: b,
+		})
+	}
+
+	return chain, nil
+}
+
+// parseLatency parses latency specifications
+// Examples: "100ms", "50-200ms", "50ms-200ms", "5-20ms"
+func parseLatency(value string) (*LatencyBehavior, error) {
+	lb := &LatencyBehavior{}
+
+	if strings.Contains(value, "-") {
+		// Range: "50-200ms" or "50ms-200ms"
+		parts := strings.Split(value, "-")
+		if len(parts) != 2 {
+			return nil, fmt.Errorf("invalid range format")
+		}
+
+		minStr := strings.TrimSpace(parts[0])
+		maxStr := strings.TrimSpace(parts[1])
+
+		// Try parsing min value
+		min, err := time.ParseDuration(minStr)
+		if err != nil {
+			// If min doesn't have a unit, try to extract unit from max
+			max, err2 := time.ParseDuration(maxStr)
+			if err2 != nil {
+				return nil, fmt.Errorf("invalid range: %w", err)
+			}
+
+			// Extract unit from max value (e.g., "200ms" -> "ms")
+			unit := extractUnit(maxStr)
+			if unit == "" {
+				return nil, fmt.Errorf("could not determine unit from range")
+			}
+
+			// Append unit to min value
+			minStr = minStr + unit
+			min, err = time.ParseDuration(minStr)
+			if err != nil {
+				return nil, err
+			}
+
+			lb.Type = "range"
+			lb.Min = min
+			lb.Max = max
+		} else {
+			// Both values parsed successfully
+			max, err := time.ParseDuration(maxStr)
+			if err != nil {
+				return nil, err
+			}
+			lb.Type = "range"
+			lb.Min = min
+			lb.Max = max
+		}
+	} else {
+		// Fixed: "100ms"
+		d, err := time.ParseDuration(value)
+		if err != nil {
+			return nil, err
+		}
+		lb.Type = "fixed"
+		lb.Value = d
+	}
+
+	return lb, nil
+}
+
+// extractUnit extracts the unit suffix from a duration string
+// e.g., "200ms" -> "ms", "5s" -> "s"
+func extractUnit(s string) string {
+	// Common time units in order of typical length
+	units := []string{"ns", "us", "µs", "ms", "s", "m", "h"}
+	for _, unit := range units {
+		if strings.HasSuffix(s, unit) {
+			return unit
+		}
+	}
+	return ""
+}
+
+// parseError parses error injection specifications
+// Examples: "503", "0.1", "503:0.1"
+func parseError(value string) (*ErrorBehavior, error) {
+	eb := &ErrorBehavior{
+		Rate: 500, // Default error code
+		Prob: 0.0,
+	}
+
+	if strings.Contains(value, ":") {
+		// Code and probability: "503:0.1"
+		parts := strings.Split(value, ":")
+		if len(parts) != 2 {
+			return nil, fmt.Errorf("invalid error format")
+		}
+		code, err := strconv.Atoi(parts[0])
+		if err != nil {
+			return nil, err
+		}
+		prob, err := strconv.ParseFloat(parts[1], 64)
+		if err != nil {
+			return nil, err
+		}
+		eb.Rate = code
+		eb.Prob = prob
+	} else {
+		// Just probability or just code
+		if strings.Contains(value, ".") {
+			// Probability
+			prob, err := strconv.ParseFloat(value, 64)
+			if err != nil {
+				return nil, err
+			}
+			eb.Prob = prob
+		} else {
+			// HTTP code with 100% probability
+			code, err := strconv.Atoi(value)
+			if err != nil {
+				return nil, err
+			}
+			eb.Rate = code
+			eb.Prob = 1.0
+		}
+	}
+
+	return eb, nil
+}
+
+// parseCPU parses CPU behavior specifications
+// Examples: "spike", "spike:5s", "steady:10s:50"
+func parseCPU(value string) (*CPUBehavior, error) {
+	parts := strings.Split(value, ":")
+	cb := &CPUBehavior{
+		Pattern:   parts[0],
+		Duration:  5 * time.Second,
+		Intensity: 80,
+	}
+
+	if len(parts) > 1 {
+		d, err := time.ParseDuration(parts[1])
+		if err != nil {
+			return nil, err
+		}
+		cb.Duration = d
+	}
+
+	if len(parts) > 2 {
+		intensity, err := strconv.Atoi(parts[2])
+		if err != nil {
+			return nil, err
+		}
+		cb.Intensity = intensity
+	}
+
+	return cb, nil
+}
+
+// parseMemory parses memory behavior specifications
+// Examples: "leak-slow", "leak-slow:10m", "steady:128Mi"
+func parseMemory(value string) (*MemoryBehavior, error) {
+	parts := strings.Split(value, ":")
+	mb := &MemoryBehavior{
+		Pattern:  parts[0],
+		Amount:   10 * 1024 * 1024, // 10MB default
+		Duration: 10 * time.Minute,
+	}
+
+	if len(parts) > 1 {
+		d, err := time.ParseDuration(parts[1])
+		if err != nil {
+			return nil, err
+		}
+		mb.Duration = d
+	}
+
+	return mb, nil
+}
+
+// Apply applies the behavior to the current request
+func (b *Behavior) Apply(ctx context.Context) error {
+	if b.Latency != nil {
+		if err := b.applyLatency(ctx); err != nil {
+			return err
+		}
+	}
+
+	if b.CPU != nil {
+		b.applyCPU(ctx)
+	}
+
+	if b.Memory != nil {
+		b.applyMemory(ctx)
+	}
+
+	return nil
+}
+
+// applyLatency applies latency behavior
+func (b *Behavior) applyLatency(ctx context.Context) error {
+	var delay time.Duration
+
+	switch b.Latency.Type {
+	case "fixed":
+		delay = b.Latency.Value
+	case "range":
+		// Random duration between min and max
+		diff := b.Latency.Max - b.Latency.Min
+		delay = b.Latency.Min + time.Duration(rand.Int63n(int64(diff)))
+	default:
+		delay = b.Latency.Value
+	}
+
+	if delay > 0 {
+		select {
+		case <-time.After(delay):
+			return nil
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+
+	return nil
+}
+
+// ShouldError determines if an error should be injected
+func (b *Behavior) ShouldError() (bool, int) {
+	if b.Error == nil {
+		return false, 0
+	}
+
+	if rand.Float64() < b.Error.Prob {
+		return true, b.Error.Rate
+	}
+
+	return false, 0
+}
+
+// applyCPU applies CPU load
+func (b *Behavior) applyCPU(ctx context.Context) {
+	go func() {
+		deadline := time.Now().Add(b.CPU.Duration)
+
+		// Calculate work duration based on intensity
+		// intensity = 80 means 80% busy, 20% idle
+		workDuration := time.Duration(float64(b.CPU.Intensity) / 100.0 * float64(10*time.Millisecond))
+		idleDuration := 10*time.Millisecond - workDuration
+
+		for time.Now().Before(deadline) {
+			select {
+			case <-ctx.Done():
+				return
+			default:
+				// Do CPU-intensive work
+				start := time.Now()
+				for time.Since(start) < workDuration {
+					// Busy loop - consume CPU
+					_ = math.Sqrt(rand.Float64())
+				}
+
+				// Idle period
+				if idleDuration > 0 {
+					time.Sleep(idleDuration)
+				}
+			}
+		}
+	}()
+}
+
+// applyMemory applies memory allocation
+func (b *Behavior) applyMemory(ctx context.Context) {
+	go func() {
+		var memHog [][]byte
+		deadline := time.Now().Add(b.Memory.Duration)
+
+		allocSize := 1024 * 1024 // 1MB chunks
+		totalAllocated := int64(0)
+
+		switch b.Memory.Pattern {
+		case "leak-slow":
+			interval := b.Memory.Duration / time.Duration(b.Memory.Amount/int64(allocSize))
+			ticker := time.NewTicker(interval)
+			defer ticker.Stop()
+
+			for time.Now().Before(deadline) && totalAllocated < b.Memory.Amount {
+				select {
+				case <-ctx.Done():
+					return
+				case <-ticker.C:
+					chunk := make([]byte, allocSize)
+					// Touch the memory to ensure it's allocated
+					for i := 0; i < len(chunk); i += 4096 {
+						chunk[i] = byte(i)
+					}
+					memHog = append(memHog, chunk)
+					totalAllocated += int64(allocSize)
+				}
+			}
+
+		case "leak-fast":
+			// Allocate quickly
+			for totalAllocated < b.Memory.Amount {
+				chunk := make([]byte, allocSize)
+				for i := 0; i < len(chunk); i += 4096 {
+					chunk[i] = byte(i)
+				}
+				memHog = append(memHog, chunk)
+				totalAllocated += int64(allocSize)
+			}
+			time.Sleep(b.Memory.Duration)
+		}
+
+		// Keep memory allocated until context is done or duration expires
+		select {
+		case <-ctx.Done():
+		case <-time.After(time.Until(deadline)):
+		}
+
+		// Allow GC to clean up
+		memHog = nil
+		runtime.GC()
+	}()
+}
+
+// GetAppliedBehaviors returns a list of behaviors that were applied
+func (b *Behavior) GetAppliedBehaviors() []string {
+	var applied []string
+
+	if b.Latency != nil {
+		latencyStr := fmt.Sprintf("latency:%s", b.Latency.Type)
+		if b.Latency.Type == "fixed" {
+			latencyStr += fmt.Sprintf(":%s", b.Latency.Value)
+		} else if b.Latency.Type == "range" {
+			latencyStr += fmt.Sprintf(":%s-%s", b.Latency.Min, b.Latency.Max)
+		}
+		applied = append(applied, latencyStr)
+	}
+	if b.Error != nil {
+		applied = append(applied, fmt.Sprintf("error:%d:%.2f", b.Error.Rate, b.Error.Prob))
+	}
+	if b.CPU != nil {
+		cpuStr := fmt.Sprintf("cpu:%s", b.CPU.Pattern)
+		if b.CPU.Duration > 0 {
+			cpuStr += fmt.Sprintf(":%s", b.CPU.Duration)
+		}
+		if b.CPU.Intensity > 0 {
+			cpuStr += fmt.Sprintf(":intensity=%d", b.CPU.Intensity)
+		}
+		applied = append(applied, cpuStr)
+	}
+	if b.Memory != nil {
+		memStr := fmt.Sprintf("memory:%s", b.Memory.Pattern)
+		if b.Memory.Amount > 0 {
+			memStr += fmt.Sprintf(":%d", b.Memory.Amount)
+		}
+		if b.Memory.Duration > 0 {
+			memStr += fmt.Sprintf(":%s", b.Memory.Duration)
+		}
+		applied = append(applied, memStr)
+	}
+
+	// Include custom parameters
+	if len(b.CustomParams) > 0 {
+		for key, value := range b.CustomParams {
+			applied = append(applied, fmt.Sprintf("custom:%s=%s", key, value))
+		}
+	}
+
+	return applied
+}
