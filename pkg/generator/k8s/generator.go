@@ -355,6 +355,10 @@ func (g *Generator) getEnvVars(svc *types.ServiceConfig) string {
 	b.WriteString("            fieldRef:\n")
 	b.WriteString("              fieldPath: spec.nodeName\n")
 
+	// Add OTEL endpoint for tracing
+	b.WriteString("        - name: OTEL_EXPORTER_OTLP_ENDPOINT\n")
+	b.WriteString("          value: \"jaeger-collector-otlp.observability.svc.cluster.local:4317\"\n")
+
 	// Add regular env vars
 	for k, v := range env {
 		b.WriteString(fmt.Sprintf("        - name: %s\n", k))
