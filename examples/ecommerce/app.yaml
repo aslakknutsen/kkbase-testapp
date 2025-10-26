@@ -12,7 +12,11 @@ services:
     namespace: frontend
     replicas: 3
     protocols: [http]
-    upstreams: [order-api, product-api]
+    upstreams:
+      - name: order-api
+        paths: [/orders, /cart]
+      - name: product-api
+        paths: [/products, /catalog]
     ingress:
       enabled: true
       host: shop.local

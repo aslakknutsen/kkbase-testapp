@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/kagenti/kkbase/testapp/pkg/service"
@@ -110,15 +111,22 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Make upstream calls with behavior chain propagated
-	upstreamParam := r.URL.Query().Get("upstream")
-	if upstreamParam != "" {
-		upstreamCalls := s.makeUpstreamCalls(ctx, upstreamParam, behaviorStr)
-		resp.UpstreamCalls = upstreamCalls
-	} else {
-		// Call all configured upstreams with behavior chain
-		resp.UpstreamCalls = s.callAllUpstreams(ctx, behaviorStr)
+	// Match upstreams based on request path
+	matchedUpstreams := s.matchUpstreamsForPath(r.URL.Path)
+
+	// If no upstreams match, return 404
+	if len(matchedUpstreams) == 0 {
+		resp.Code = 404
+		resp.Body = fmt.Sprintf("No upstream matches path: %s", r.URL.Path)
+		resp.Finalize(start)
+
+		s.telemetry.RecordBehavior("path_not_found")
+		s.sendResponse(w, resp, 404, span, start)
+		return
 	}
+
+	// Call matched upstreams
+	resp.UpstreamCalls = s.callMatchedUpstreams(ctx, matchedUpstreams, r.URL.Path, behaviorStr)
 
 	// Set success response
 	resp.Code = 200
@@ -126,34 +134,6 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	resp.Finalize(start)
 
 	s.sendResponse(w, resp, 200, span, start)
-}
-
-// makeUpstreamCalls parses and executes upstream call specifications
-// Format: "service1,service2:behavior=latency=100ms"
-func (s *Server) makeUpstreamCalls(ctx context.Context, upstreamSpec string, behaviorStr string) []service.UpstreamCall {
-	var calls []service.UpstreamCall
-
-	// For simplicity, just split by comma for now
-	// TODO: Implement more sophisticated parsing
-	return calls
-}
-
-// callAllUpstreams calls all configured upstream services with behavior propagation
-func (s *Server) callAllUpstreams(ctx context.Context, behaviorStr string) []service.UpstreamCall {
-	var calls []service.UpstreamCall
-
-	for name, upstream := range s.config.Upstreams {
-		// Use shared caller with behavior propagation
-		result := s.caller.Call(ctx, name, upstream, behaviorStr)
-
-		// Convert to service.UpstreamCall and record metrics
-		call := s.resultToUpstreamCall(result)
-		s.telemetry.RecordUpstreamCall(name, call.Code, result.Duration)
-
-		calls = append(calls, call)
-	}
-
-	return calls
 }
 
 // resultToUpstreamCall converts a client.Result to service.UpstreamCall
@@ -177,6 +157,93 @@ func (s *Server) resultToUpstreamCall(result client.Result) service.UpstreamCall
 	}
 
 	return call
+}
+
+// matchUpstreamsForPath returns upstreams that match the given path
+func (s *Server) matchUpstreamsForPath(path string) map[string]*service.UpstreamConfig {
+	// If no upstreams configured, return empty
+	if len(s.config.Upstreams) == 0 {
+		return nil
+	}
+
+	matched := make(map[string]*service.UpstreamConfig)
+	hasAnyPathConfig := false
+
+	for name, upstream := range s.config.Upstreams {
+		if len(upstream.Paths) == 0 {
+			// No paths configured = catch-all
+			matched[name] = upstream
+		} else {
+			hasAnyPathConfig = true
+			// Check if path matches any prefix
+			for _, prefix := range upstream.Paths {
+				if strings.HasPrefix(path, prefix) {
+					matched[name] = upstream
+					break
+				}
+			}
+		}
+	}
+
+	// If some upstreams have path config but none matched, return empty
+	if hasAnyPathConfig && len(matched) == 0 {
+		return nil
+	}
+
+	return matched
+}
+
+// stripMatchedPrefix strips the matched path prefix from the request path
+func (s *Server) stripMatchedPrefix(path string, upstream *service.UpstreamConfig) string {
+	if len(upstream.Paths) == 0 {
+		return path // No paths configured, don't strip
+	}
+
+	// Find longest matching prefix
+	longestMatch := ""
+	for _, prefix := range upstream.Paths {
+		if strings.HasPrefix(path, prefix) && len(prefix) > len(longestMatch) {
+			longestMatch = prefix
+		}
+	}
+
+	if longestMatch != "" {
+		stripped := strings.TrimPrefix(path, longestMatch)
+		if stripped == "" {
+			return "/"
+		}
+		return stripped
+	}
+	return path
+}
+
+// callMatchedUpstreams calls the matched upstreams with path stripping
+func (s *Server) callMatchedUpstreams(ctx context.Context, upstreams map[string]*service.UpstreamConfig, requestPath string, behaviorStr string) []service.UpstreamCall {
+	var calls []service.UpstreamCall
+
+	for name, upstream := range upstreams {
+		// Strip matched prefix from path
+		forwardPath := s.stripMatchedPrefix(requestPath, upstream)
+
+		// Update upstream URL to include the path
+		upstreamWithPath := &service.UpstreamConfig{
+			Name:     upstream.Name,
+			URL:      upstream.URL + forwardPath,
+			Protocol: upstream.Protocol,
+			Paths:    upstream.Paths,
+		}
+
+		// Use shared caller with behavior propagation
+		result := s.caller.Call(ctx, name, upstreamWithPath, behaviorStr)
+
+		// Convert to service.UpstreamCall and record metrics
+		call := s.resultToUpstreamCall(result)
+		s.telemetry.RecordUpstreamCall(name, call.Code, result.Duration)
+
+		calls = append(calls, call)
+	}
+
+	return calls
 }
 
 // sendResponse sends the JSON response

@@ -93,13 +93,13 @@ func Validate(spec *types.AppSpec) error {
 		for _, upstream := range svc.Upstreams {
 			found := false
 			for _, target := range spec.Services {
-				if target.Name == upstream {
+				if target.Name == upstream.Name {
 					found = true
 					break
 				}
 			}
 			if !found {
-				return fmt.Errorf("service %s references unknown upstream: %s", svc.Name, upstream)
+				return fmt.Errorf("service %s references unknown upstream: %s", svc.Name, upstream.Name)
 			}
 		}
 	}
@@ -131,7 +131,11 @@ func checkCircularDeps(spec *types.AppSpec) error {
 	// Build adjacency list
 	graph := make(map[string][]string)
 	for _, svc := range spec.Services {
-		graph[svc.Name] = svc.Upstreams
+		upstreamNames := make([]string, 0, len(svc.Upstreams))
+		for _, upstream := range svc.Upstreams {
+			upstreamNames = append(upstreamNames, upstream.Name)
+		}
+		graph[svc.Name] = upstreamNames
 	}
 
 	// Check each service for circular deps using DFS

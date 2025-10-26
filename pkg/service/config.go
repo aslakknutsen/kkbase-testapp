@@ -39,7 +39,8 @@ type Config struct {
 type UpstreamConfig struct {
 	Name     string
 	URL      string
-	Protocol string // "http" or "grpc"
+	Protocol string   // "http" or "grpc"
+	Paths    []string // Path prefixes this upstream handles (empty = match all)
 }
 
 // LoadConfigFromEnv loads configuration from environment variables
@@ -60,22 +61,43 @@ func LoadConfigFromEnv() *Config {
 		Upstreams:       make(map[string]*UpstreamConfig),
 	}
 
-	// Parse upstreams: product-api:http://product:8080,cart-api:grpc://cart:9090
+	// Parse upstreams: name:url:path1,path2|name2:url2
+	// Old format (without paths): product-api:http://product:8080,cart-api:grpc://cart:9090
+	// New format (with paths): order-api:http://order:8080:/orders,/cart|product-api:http://product:8080:/products
 	upstreamsStr := os.Getenv("UPSTREAMS")
 	if upstreamsStr != "" {
-		for _, upstream := range strings.Split(upstreamsStr, ",") {
-			parts := strings.SplitN(strings.TrimSpace(upstream), ":", 2)
-			if len(parts) == 2 {
+		// Use | as delimiter to support commas in path lists
+		delimiter := "|"
+		if !strings.Contains(upstreamsStr, "|") {
+			// Backward compatibility: if no | found, use comma
+			delimiter = ","
+		}
+
+		for _, upstream := range strings.Split(upstreamsStr, delimiter) {
+			parts := strings.SplitN(strings.TrimSpace(upstream), ":", 3)
+			if len(parts) >= 2 {
 				name := parts[0]
 				url := parts[1]
 				protocol := "http"
 				if strings.HasPrefix(url, "grpc://") {
 					protocol = "grpc"
 				}
+
+				var paths []string
+				if len(parts) == 3 && parts[2] != "" {
+					// Split paths by comma
+					for _, p := range strings.Split(parts[2], ",") {
+						if trimmed := strings.TrimSpace(p); trimmed != "" {
+							paths = append(paths, trimmed)
+						}
+					}
+				}
+
 				cfg.Upstreams[name] = &UpstreamConfig{
 					Name:     name,
 					URL:      url,
 					Protocol: protocol,
+					Paths:    paths,
 				}
 			}
 		}

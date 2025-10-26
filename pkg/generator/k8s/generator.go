@@ -383,7 +383,7 @@ func (g *Generator) buildUpstreamsEnv(svc *types.ServiceConfig) string {
 	for _, upstream := range svc.Upstreams {
 		// Find the upstream service
 		for _, target := range g.spec.Services {
-			if target.Name == upstream {
+			if target.Name == upstream.Name {
 				protocol := "http"
 				port := target.Ports.HTTP
 				if target.HasGRPC() && !target.HasHTTP() {
@@ -392,12 +392,20 @@ func (g *Generator) buildUpstreamsEnv(svc *types.ServiceConfig) string {
 				}
 				url := fmt.Sprintf("%s://%s.%s.svc.cluster.local:%d",
 					protocol, target.Name, target.Namespace, port)
-				parts = append(parts, fmt.Sprintf("%s:%s", upstream, url))
+
+				// Add paths if configured
+				if len(upstream.Paths) > 0 {
+					pathsStr := strings.Join(upstream.Paths, ",")
+					parts = append(parts, fmt.Sprintf("%s:%s:%s", upstream.Name, url, pathsStr))
+				} else {
+					parts = append(parts, fmt.Sprintf("%s:%s", upstream.Name, url))
+				}
 				break
 			}
 		}
 	}
-	return strings.Join(parts, ",")
+	// Use | as delimiter to support commas in path lists
+	return strings.Join(parts, "|")
 }
 
 func (g *Generator) buildBehaviorString(svc *types.ServiceConfig) string {

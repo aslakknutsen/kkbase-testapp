@@ -14,6 +14,12 @@ type AppConfig struct {
 	Namespaces []string `yaml:"namespaces,omitempty"`
 }
 
+// UpstreamRoute defines an upstream service with optional path-based routing
+type UpstreamRoute struct {
+	Name  string   `yaml:"name"`
+	Paths []string `yaml:"paths,omitempty"` // Path prefixes this upstream handles (empty = match all)
+}
+
 // ServiceConfig defines a service
 type ServiceConfig struct {
 	Name        string            `yaml:"name"`
@@ -22,7 +28,7 @@ type ServiceConfig struct {
 	Type        string            `yaml:"type,omitempty"` // Deployment, StatefulSet, DaemonSet
 	Protocols   []string          `yaml:"protocols,omitempty"`
 	Ports       PortsConfig       `yaml:"ports,omitempty"`
-	Upstreams   []string          `yaml:"upstreams,omitempty"`
+	Upstreams   []UpstreamRoute   `yaml:"upstreams,omitempty"`
 	Behavior    BehaviorConfig    `yaml:"behavior,omitempty"`
 	Storage     StorageConfig     `yaml:"storage,omitempty"`
 	Ingress     IngressConfig     `yaml:"ingress,omitempty"`
@@ -150,4 +156,87 @@ func contains(slice []string, item string) bool {
 		}
 	}
 	return false
+}
+
+// UnmarshalYAML implements custom unmarshaling to support both old []string and new []UpstreamRoute formats
+func (s *ServiceConfig) UnmarshalYAML(unmarshal func(interface{}) error) error {
+	// Define an aux struct with all fields explicit
+	aux := &struct {
+		Name        string            `yaml:"name"`
+		Namespace   string            `yaml:"namespace,omitempty"`
+		Replicas    int               `yaml:"replicas,omitempty"`
+		Type        string            `yaml:"type,omitempty"`
+		Protocols   []string          `yaml:"protocols,omitempty"`
+		Ports       PortsConfig       `yaml:"ports,omitempty"`
+		Upstreams   interface{}       `yaml:"upstreams,omitempty"`
+		Behavior    BehaviorConfig    `yaml:"behavior,omitempty"`
+		Storage     StorageConfig     `yaml:"storage,omitempty"`
+		Ingress     IngressConfig     `yaml:"ingress,omitempty"`
+		Resources   ResourceConfig    `yaml:"resources,omitempty"`
+		Labels      map[string]string `yaml:"labels,omitempty"`
+		Annotations map[string]string `yaml:"annotations,omitempty"`
+	}{}
+
+	if err := unmarshal(aux); err != nil {
+		return err
+	}
+
+	// Copy all fields
+	s.Name = aux.Name
+	s.Namespace = aux.Namespace
+	s.Replicas = aux.Replicas
+	s.Type = aux.Type
+	s.Protocols = aux.Protocols
+	s.Ports = aux.Ports
+	s.Behavior = aux.Behavior
+	s.Storage = aux.Storage
+	s.Ingress = aux.Ingress
+	s.Resources = aux.Resources
+	s.Labels = aux.Labels
+	s.Annotations = aux.Annotations
+
+	// Process upstreams based on type
+	if aux.Upstreams != nil {
+		switch v := aux.Upstreams.(type) {
+		case []interface{}:
+			if len(v) > 0 {
+				// Check first element to determine format
+				switch v[0].(type) {
+				case string:
+					// Old format: []string
+					s.Upstreams = make([]UpstreamRoute, 0, len(v))
+					for _, item := range v {
+						if str, ok := item.(string); ok {
+							s.Upstreams = append(s.Upstreams, UpstreamRoute{
+								Name:  str,
+								Paths: nil,
+							})
+						}
+					}
+				case map[string]interface{}:
+					// New format: []UpstreamRoute
+					s.Upstreams = make([]UpstreamRoute, 0, len(v))
+					for _, item := range v {
+						if m, ok := item.(map[string]interface{}); ok {
+							route := UpstreamRoute{}
+							if name, ok := m["name"].(string); ok {
+								route.Name = name
+							}
+							if paths, ok := m["paths"].([]interface{}); ok {
+								route.Paths = make([]string, 0, len(paths))
+								for _, p := range paths {
+									if pathStr, ok := p.(string); ok {
+										route.Paths = append(route.Paths, pathStr)
+									}
+								}
+							}
+							s.Upstreams = append(s.Upstreams, route)
+						}
+					}
+				}
+			}
+		}
+	}
+
+	return nil
 }
