@@ -12,8 +12,10 @@ import (
 	"github.com/kagenti/kkbase/testapp/pkg/service/client"
 	"github.com/kagenti/kkbase/testapp/pkg/service/telemetry"
 	pb "github.com/kagenti/kkbase/testapp/proto/testservice"
+	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/propagation"
 	"go.opentelemetry.io/otel/trace"
 	"go.uber.org/zap"
 	"google.golang.org/protobuf/encoding/protojson"
@@ -40,8 +42,9 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	start := time.Now()
 	ctx := r.Context()
 
-	// Extract trace context from headers (handled automatically by OTEL propagator)
-	// The shared caller will properly propagate context to upstreams
+	// Extract trace context from HTTP headers
+	propagator := otel.GetTextMapPropagator()
+	ctx = propagator.Extract(ctx, propagation.HeaderCarrier(r.Header))
 
 	// Start span
 	ctx, span := s.telemetry.StartSpan(ctx, "http.request",
