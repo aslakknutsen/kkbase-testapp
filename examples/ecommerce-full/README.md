@@ -2,7 +2,7 @@
 
 A comprehensive e-commerce microservices example demonstrating event-driven architecture, saga patterns, and real-world service interactions using the TestApp DSL.
 
-## Architecture Overview
+## Architecture
 
 ShopFlow is a modern e-commerce platform built on 12 microservices organized across 7 namespaces. The architecture uses an **API Gateway** as the single entry point and a **Message Bus** to simulate asynchronous event-driven communication between services.
 
@@ -405,7 +405,7 @@ This is the heart of ShopFlow - a distributed transaction spanning multiple serv
 
 ## Behavior Testing Scenarios
 
-All behavior tests are performed by adding the `?behavior=` query parameter to your requests.
+All behavior tests are performed by adding the `?behavior=` query parameter to your requests. For detailed behavior syntax, see the [Behavior Testing Guide](../../docs/guides/behavior-testing.md).
 
 ### Scenario 1: Normal Checkout Flow (Baseline)
 
@@ -772,9 +772,10 @@ Different protocols for different needs:
 5. **Add Security**: mTLS between services, authentication, authorization
 6. **Scale Testing**: Test with 10k+ orders/minute
 
-## Related Documentation
+## See Also
 
-- [Behavior Engine Quick Reference](../../pkg/service/behavior/QUICK_REFERENCE.md)
-- [Main README](../../README.md)
-- [Jaeger Setup Guide](../../docs/JAEGER_SETUP.md)
+- [Behavior Testing Guide](../../docs/guides/behavior-testing.md)
+- [Path-Based Routing](../../docs/guides/path-routing.md)
+- [Architecture Concepts](../../docs/concepts/architecture.md)
+- [Jaeger Setup Guide](../../docs/guides/jaeger-setup.md)
 
