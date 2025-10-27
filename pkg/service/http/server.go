@@ -2,7 +2,6 @@ package http
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"net/http"
 	"strings"
@@ -12,10 +11,12 @@ import (
 	"github.com/kagenti/kkbase/testapp/pkg/service/behavior"
 	"github.com/kagenti/kkbase/testapp/pkg/service/client"
 	"github.com/kagenti/kkbase/testapp/pkg/service/telemetry"
+	pb "github.com/kagenti/kkbase/testapp/proto/testservice"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/trace"
 	"go.uber.org/zap"
+	"google.golang.org/protobuf/encoding/protojson"
 )
 
 // Server handles HTTP requests
@@ -54,15 +55,23 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	defer s.telemetry.DecActiveRequests("http")
 
 	// Create response
-	resp := service.NewResponse(s.config, "http")
-
-	// Capture the request URL (path + query string)
-	resp.URL = r.URL.RequestURI()
+	resp := &pb.ServiceResponse{
+		Service: &pb.ServiceInfo{
+			Name:      s.config.Name,
+			Version:   s.config.Version,
+			Namespace: s.config.Namespace,
+			Pod:       s.config.PodName,
+			Node:      s.config.NodeName,
+			Protocol:  "http",
+		},
+		StartTime: start.Format(time.RFC3339Nano),
+		Url:       r.URL.RequestURI(),
+	}
 
 	// Get trace IDs
 	if spanCtx := span.SpanContext(); spanCtx.IsValid() {
-		resp.TraceID = spanCtx.TraceID().String()
-		resp.SpanID = spanCtx.SpanID().String()
+		resp.TraceId = spanCtx.TraceID().String()
+		resp.SpanId = spanCtx.SpanID().String()
 	}
 
 	// Parse behavior from query parameters or headers
@@ -96,10 +105,12 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 		// Check for error injection
 		if shouldErr, errCode := beh.ShouldError(); shouldErr {
-			resp.Code = errCode
+			now := time.Now()
+			resp.Code = int32(errCode)
 			resp.Body = fmt.Sprintf("Injected error: %d", errCode)
 			resp.BehaviorsApplied = beh.GetAppliedBehaviors()
-			resp.Finalize(start)
+			resp.EndTime = now.Format(time.RFC3339Nano)
+			resp.Duration = now.Sub(start).String()
 
 			s.telemetry.RecordBehavior("error")
 			s.sendResponse(w, resp, errCode, span, start)
@@ -119,9 +130,11 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	// If no upstreams match, return 404
 	if len(matchedUpstreams) == 0 {
+		now := time.Now()
 		resp.Code = 404
 		resp.Body = fmt.Sprintf("No upstream matches path: %s", r.URL.Path)
-		resp.Finalize(start)
+		resp.EndTime = now.Format(time.RFC3339Nano)
+		resp.Duration = now.Sub(start).String()
 
 		s.telemetry.RecordBehavior("path_not_found")
 		s.sendResponse(w, resp, 404, span, start)
@@ -132,22 +145,22 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	resp.UpstreamCalls = s.callMatchedUpstreams(ctx, matchedUpstreams, r.URL.Path, behaviorStr)
 
 	// Set success response
+	now := time.Now()
 	resp.Code = 200
 	resp.Body = fmt.Sprintf("Hello from %s (HTTP)", s.config.Name)
-	resp.Finalize(start)
+	resp.EndTime = now.Format(time.RFC3339Nano)
+	resp.Duration = now.Sub(start).String()
 
 	s.sendResponse(w, resp, 200, span, start)
 }
 
-// resultToUpstreamCall converts a client.Result to service.Response (for upstream calls)
-func (s *Server) resultToUpstreamCall(result client.Result) service.Response {
-	call := service.Response{
-		Service: &service.ServiceInfo{
-			Name:     result.Name,
-			Protocol: result.Protocol,
-		},
-		URL:              result.URL,
-		Code:             result.Code,
+// resultToUpstreamCall converts a client.Result to pb.UpstreamCall (for upstream calls)
+func (s *Server) resultToUpstreamCall(result client.Result) *pb.UpstreamCall {
+	call := &pb.UpstreamCall{
+		Name:             result.Name,
+		Uri:              result.URL,
+		Protocol:         result.Protocol,
+		Code:             int32(result.Code),
 		Duration:         result.Duration.String(),
 		Error:            result.Error,
 		BehaviorsApplied: result.BehaviorsApplied,
@@ -155,7 +168,7 @@ func (s *Server) resultToUpstreamCall(result client.Result) service.Response {
 
 	// Convert nested calls
 	if len(result.UpstreamCalls) > 0 {
-		call.UpstreamCalls = make([]service.Response, len(result.UpstreamCalls))
+		call.UpstreamCalls = make([]*pb.UpstreamCall, len(result.UpstreamCalls))
 		for i, uc := range result.UpstreamCalls {
 			call.UpstreamCalls[i] = s.resultToUpstreamCall(uc)
 		}
@@ -223,8 +236,8 @@ func (s *Server) stripMatchedPrefix(path string, upstream *service.UpstreamConfi
 }
 
 // callMatchedUpstreams calls the matched upstreams with path stripping
-func (s *Server) callMatchedUpstreams(ctx context.Context, upstreams map[string]*service.UpstreamConfig, requestPath string, behaviorStr string) []service.Response {
-	var calls []service.Response
+func (s *Server) callMatchedUpstreams(ctx context.Context, upstreams map[string]*service.UpstreamConfig, requestPath string, behaviorStr string) []*pb.UpstreamCall {
+	var calls []*pb.UpstreamCall
 
 	for name, upstream := range upstreams {
 		// Strip matched prefix from path
@@ -241,9 +254,9 @@ func (s *Server) callMatchedUpstreams(ctx context.Context, upstreams map[string]
 		// Use shared caller with behavior propagation
 		result := s.caller.Call(ctx, name, upstreamWithPath, behaviorStr)
 
-		// Convert to service.Response (upstream call) and record metrics
+		// Convert to pb.UpstreamCall and record metrics
 		call := s.resultToUpstreamCall(result)
-		s.telemetry.RecordUpstreamCall(name, call.Code, result.Duration)
+		s.telemetry.RecordUpstreamCall(name, int(call.Code), result.Duration)
 
 		calls = append(calls, call)
 	}
@@ -251,13 +264,26 @@ func (s *Server) callMatchedUpstreams(ctx context.Context, upstreams map[string]
 	return calls
 }
 
-// sendResponse sends the JSON response
-func (s *Server) sendResponse(w http.ResponseWriter, resp *service.Response, statusCode int, span trace.Span, start time.Time) {
+// sendResponse sends the JSON response using protojson
+func (s *Server) sendResponse(w http.ResponseWriter, resp *pb.ServiceResponse, statusCode int, span trace.Span, start time.Time) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(statusCode)
 
-	if err := json.NewEncoder(w).Encode(resp); err != nil {
+	// Use protojson for marshaling with proper options
+	marshaler := protojson.MarshalOptions{
+		UseProtoNames:   true,  // Use snake_case field names from proto
+		EmitUnpopulated: false, // Skip zero values (like omitempty)
+	}
+
+	jsonBytes, err := marshaler.Marshal(resp)
+	if err != nil {
 		s.telemetry.Logger.Error("Failed to encode response", zap.Error(err))
+		span.RecordError(err)
+		return
+	}
+
+	if _, err := w.Write(jsonBytes); err != nil {
+		s.telemetry.Logger.Error("Failed to write response", zap.Error(err))
 		span.RecordError(err)
 	}
 
@@ -269,7 +295,7 @@ func (s *Server) sendResponse(w http.ResponseWriter, resp *service.Response, sta
 	s.telemetry.Logger.Info("request_completed",
 		zap.Int("status", statusCode),
 		zap.Duration("duration", duration),
-		zap.String("trace_id", resp.TraceID),
+		zap.String("trace_id", resp.TraceId),
 		zap.Int("upstream_calls", len(resp.UpstreamCalls)),
 	)
 

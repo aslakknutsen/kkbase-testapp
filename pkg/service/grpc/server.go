@@ -34,7 +34,7 @@ func NewServer(cfg *service.Config, tel *telemetry.Telemetry) *Server {
 }
 
 // Call handles a gRPC call with configurable behavior
-func (s *Server) Call(ctx context.Context, req *pb.CallRequest) (*pb.CallResponse, error) {
+func (s *Server) Call(ctx context.Context, req *pb.CallRequest) (*pb.ServiceResponse, error) {
 	start := time.Now()
 
 	// Extract trace context from metadata
@@ -170,10 +170,10 @@ func (s *Server) resultToUpstreamCall(result client.Result) *pb.UpstreamCall {
 }
 
 // buildResponse constructs the gRPC response
-func (s *Server) buildResponse(ctx context.Context, start time.Time, code int, behaviorsApplied []string, upstreamCalls []*pb.UpstreamCall) *pb.CallResponse {
+func (s *Server) buildResponse(ctx context.Context, start time.Time, code int, behaviorsApplied []string, upstreamCalls []*pb.UpstreamCall) *pb.ServiceResponse {
 	now := time.Now()
 
-	resp := &pb.CallResponse{
+	resp := &pb.ServiceResponse{
 		Service: &pb.ServiceInfo{
 			Name:      s.config.Name,
 			Version:   s.config.Version,

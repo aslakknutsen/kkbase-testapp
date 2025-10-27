@@ -2,8 +2,8 @@ package client
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"strings"
 	"time"
@@ -17,6 +17,7 @@ import (
 	"go.opentelemetry.io/otel/trace"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/metadata"
+	"google.golang.org/protobuf/encoding/protojson"
 )
 
 // Result represents the standardized result of an upstream call
@@ -79,7 +80,7 @@ func (c *Caller) Call(ctx context.Context, name string, upstream *service.Upstre
 
 	// Update span status
 	if result.Error != "" {
-		span.RecordError(fmt.Errorf(result.Error))
+		span.RecordError(fmt.Errorf("%s", result.Error))
 		span.SetStatus(codes.Error, result.Error)
 	} else if result.Code >= 400 {
 		span.SetStatus(codes.Error, fmt.Sprintf("Status %d", result.Code))
@@ -138,38 +139,25 @@ func (c *Caller) callHTTP(ctx context.Context, name string, upstream *service.Up
 
 	result.Code = resp.StatusCode
 
-	// Try to parse response for nested upstream calls and behaviors
-	// Use the existing service.Response type which is already recursive
-	var httpResp struct {
-		BehaviorsApplied []string           `json:"behaviors_applied,omitempty"`
-		UpstreamCalls    []service.Response `json:"upstream_calls,omitempty"`
+	// Read response body
+	bodyBytes, err := io.ReadAll(resp.Body)
+	if err != nil {
+		result.Error = fmt.Sprintf("failed to read response body: %v", err)
+		return result
 	}
 
-	if err := json.NewDecoder(resp.Body).Decode(&httpResp); err == nil {
+	// Try to parse response as protobuf ServiceResponse
+	var httpResp pb.ServiceResponse
+	unmarshaler := protojson.UnmarshalOptions{
+		DiscardUnknown: true, // Ignore unknown fields for flexibility
+	}
+
+	if err := unmarshaler.Unmarshal(bodyBytes, &httpResp); err == nil {
 		result.BehaviorsApplied = httpResp.BehaviorsApplied
 
-		// Recursive function to convert service.Response to Result
-		var convertUpstreamCall func(service.Response) Result
-		convertUpstreamCall = func(uc service.Response) Result {
-			duration, _ := time.ParseDuration(uc.Duration)
-			r := Result{
-				Name:             uc.Service.Name,
-				URL:              uc.URL,
-				Protocol:         uc.Service.Protocol,
-				Duration:         duration,
-				Code:             uc.Code,
-				Error:            uc.Error,
-				BehaviorsApplied: uc.BehaviorsApplied,
-			}
-			// Recursively convert nested upstream calls
-			for _, nested := range uc.UpstreamCalls {
-				r.UpstreamCalls = append(r.UpstreamCalls, convertUpstreamCall(nested))
-			}
-			return r
-		}
-
-		for _, uc := range httpResp.UpstreamCalls {
-			result.UpstreamCalls = append(result.UpstreamCalls, convertUpstreamCall(uc))
+		// Convert pb.UpstreamCall to Result (reuse existing converter)
+		if len(httpResp.UpstreamCalls) > 0 {
+			result.UpstreamCalls = convertUpstreamCalls(httpResp.UpstreamCalls)
 		}
 	}
 

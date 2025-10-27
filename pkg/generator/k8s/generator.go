@@ -344,7 +344,12 @@ func (g *Generator) getEnvVars(svc *types.ServiceConfig) []envVarData {
 }
 
 func (g *Generator) buildUpstreamsEnv(svc *types.ServiceConfig) string {
-	var parts []string
+	// Consolidate upstreams by name to handle multiple entries with different paths
+	upstreamMap := make(map[string]struct {
+		url   string
+		paths []string
+	})
+
 	for _, upstream := range svc.Upstreams {
 		// Find the upstream service
 		for _, target := range g.spec.Services {
@@ -358,18 +363,27 @@ func (g *Generator) buildUpstreamsEnv(svc *types.ServiceConfig) string {
 				url := fmt.Sprintf("%s://%s.%s.svc.cluster.local:%d",
 					protocol, target.Name, target.Namespace, port)
 
-				// Add paths if configured
-				// Use = between name and URL to avoid confusion with : in URLs
-				if len(upstream.Paths) > 0 {
-					pathsStr := strings.Join(upstream.Paths, ",")
-					parts = append(parts, fmt.Sprintf("%s=%s:%s", upstream.Name, url, pathsStr))
-				} else {
-					parts = append(parts, fmt.Sprintf("%s=%s", upstream.Name, url))
-				}
+				// Consolidate paths for the same upstream
+				entry := upstreamMap[upstream.Name]
+				entry.url = url
+				entry.paths = append(entry.paths, upstream.Paths...)
+				upstreamMap[upstream.Name] = entry
 				break
 			}
 		}
 	}
+
+	// Build the environment variable string
+	var parts []string
+	for name, entry := range upstreamMap {
+		if len(entry.paths) > 0 {
+			pathsStr := strings.Join(entry.paths, ",")
+			parts = append(parts, fmt.Sprintf("%s=%s:%s", name, entry.url, pathsStr))
+		} else {
+			parts = append(parts, fmt.Sprintf("%s=%s", name, entry.url))
+		}
+	}
+
 	// Use | as delimiter to support commas in path lists
 	return strings.Join(parts, "|")
 }

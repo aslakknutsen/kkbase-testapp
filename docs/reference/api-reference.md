@@ -205,14 +205,14 @@ syntax = "proto3";
 package testservice;
 
 service TestService {
-  rpc Call(CallRequest) returns (CallResponse);
+  rpc Call(CallRequest) returns (ServiceResponse);
 }
 
 message CallRequest {
   string behavior = 1;
 }
 
-message CallResponse {
+message ServiceResponse {
   ServiceInfo service = 1;
   string start_time = 2;
   string end_time = 3;
@@ -261,7 +261,7 @@ message CallRequest {
 **Response:**
 
 ```protobuf
-message CallResponse {
+message ServiceResponse {
   ServiceInfo service = 1;
   string start_time = 2;
   string end_time = 3;
