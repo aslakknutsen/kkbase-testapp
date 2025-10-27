@@ -1,28 +1,85 @@
 package gateway
 
 import (
+	"bytes"
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"embed"
 	"encoding/base64"
 	"encoding/pem"
 	"fmt"
 	"math/big"
-	"strings"
+	"text/template"
 	"time"
 
 	"github.com/kagenti/kkbase/testapp/pkg/dsl/types"
 )
 
+//go:embed templates/*.tmpl
+var templatesFS embed.FS
+
 // Generator generates Gateway API manifests
 type Generator struct {
-	spec *types.AppSpec
+	spec      *types.AppSpec
+	templates *template.Template
+}
+
+// Template data structures
+type gatewayData struct {
+	Name       string
+	NeedsHTTP  bool
+	NeedsHTTPS bool
+}
+
+type httpRouteData struct {
+	Name        string
+	Namespace   string
+	GatewayName string
+	Hostname    string
+	Rules       []httpRouteRule
+}
+
+type httpRouteRule struct {
+	Path             string
+	BackendName      string
+	BackendNamespace string
+	BackendPort      int
+}
+
+type grpcRouteData struct {
+	Name        string
+	Namespace   string
+	GatewayName string
+	Hostname    string
+	BackendName string
+	BackendPort int
+}
+
+type tlsSecretData struct {
+	CertBase64 string
+	KeyBase64  string
+}
+
+type referenceGrantsData struct {
+	Grants []referenceGrant
+}
+
+type referenceGrant struct {
+	Name      string
+	Namespace string
 }
 
 // NewGenerator creates a new Gateway API manifest generator
 func NewGenerator(spec *types.AppSpec) *Generator {
-	return &Generator{spec: spec}
+	// Parse templates
+	tmpl := template.Must(template.New("gateway").ParseFS(templatesFS, "templates/*.tmpl"))
+
+	return &Generator{
+		spec:      spec,
+		templates: tmpl,
+	}
 }
 
 // GenerateAll generates all Gateway API manifests
@@ -97,39 +154,17 @@ func (g *Generator) GenerateGateway() string {
 		}
 	}
 
-	var listeners strings.Builder
-
-	if needsHTTP {
-		listeners.WriteString(`  - name: http
-    protocol: HTTP
-    port: 80
-`)
+	data := gatewayData{
+		Name:       g.spec.App.Name,
+		NeedsHTTP:  needsHTTP,
+		NeedsHTTPS: needsHTTPS,
 	}
 
-	if needsHTTPS {
-		listeners.WriteString(`  - name: https
-    protocol: HTTPS
-    port: 443
-    tls:
-      mode: Terminate
-      certificateRefs:
-      - name: gateway-tls-cert
-`)
+	var buf bytes.Buffer
+	if err := g.templates.ExecuteTemplate(&buf, "gateway.yaml.tmpl", data); err != nil {
+		panic(fmt.Sprintf("failed to execute gateway template: %v", err))
 	}
-
-	return fmt.Sprintf(`apiVersion: gateway.networking.k8s.io/v1
-kind: Gateway
-metadata:
-  name: %s-gateway
-  namespace: default
-spec:
-  gatewayClassName: openshift-default
-  listeners:
-%s
-`,
-		g.spec.App.Name,
-		listeners.String(),
-	)
+	return buf.String()
 }
 
 // GenerateHTTPRoute generates an HTTPRoute manifest
@@ -139,81 +174,47 @@ func (g *Generator) GenerateHTTPRoute(svc *types.ServiceConfig) string {
 		paths = []string{"/"}
 	}
 
-	var rules strings.Builder
+	var rules []httpRouteRule
 	for _, path := range paths {
-		rules.WriteString(fmt.Sprintf(`  - matches:
-    - path:
-        type: PathPrefix
-        value: %s
-    backendRefs:
-    - name: %s
-      namespace: %s
-      port: %d
-`,
-			path,
-			svc.Name,
-			svc.Namespace,
-			svc.Ports.HTTP,
-		))
+		rules = append(rules, httpRouteRule{
+			Path:             path,
+			BackendName:      svc.Name,
+			BackendNamespace: svc.Namespace,
+			BackendPort:      svc.Ports.HTTP,
+		})
 	}
 
-	hostnames := ""
-	if svc.Ingress.Host != "" {
-		hostnames = fmt.Sprintf(`  hostnames:
-  - %s
-`, svc.Ingress.Host)
+	data := httpRouteData{
+		Name:        svc.Name,
+		Namespace:   svc.Namespace,
+		GatewayName: g.spec.App.Name,
+		Hostname:    svc.Ingress.Host,
+		Rules:       rules,
 	}
 
-	return fmt.Sprintf(`apiVersion: gateway.networking.k8s.io/v1
-kind: HTTPRoute
-metadata:
-  name: %s
-  namespace: %s
-spec:
-  parentRefs:
-  - name: %s-gateway
-    namespace: default
-%s  rules:
-%s
-`,
-		svc.Name,
-		svc.Namespace,
-		g.spec.App.Name,
-		hostnames,
-		rules.String(),
-	)
+	var buf bytes.Buffer
+	if err := g.templates.ExecuteTemplate(&buf, "httproute.yaml.tmpl", data); err != nil {
+		panic(fmt.Sprintf("failed to execute httproute template: %v", err))
+	}
+	return buf.String()
 }
 
 // GenerateGRPCRoute generates a GRPCRoute manifest
 func (g *Generator) GenerateGRPCRoute(svc *types.ServiceConfig) string {
-	hostnames := ""
-	if svc.Ingress.Host != "" {
-		hostnames = fmt.Sprintf(`  hostnames:
-  - %s
-`, svc.Ingress.Host)
+	data := grpcRouteData{
+		Name:        svc.Name,
+		Namespace:   svc.Namespace,
+		GatewayName: g.spec.App.Name,
+		Hostname:    svc.Ingress.Host,
+		BackendName: svc.Name,
+		BackendPort: svc.Ports.GRPC,
 	}
 
-	return fmt.Sprintf(`apiVersion: gateway.networking.k8s.io/v1alpha2
-kind: GRPCRoute
-metadata:
-  name: %s
-  namespace: %s
-spec:
-  parentRefs:
-  - name: %s-gateway
-    namespace: default
-%s  rules:
-  - backendRefs:
-    - name: %s
-      port: %d
-`,
-		svc.Name,
-		svc.Namespace,
-		g.spec.App.Name,
-		hostnames,
-		svc.Name,
-		svc.Ports.GRPC,
-	)
+	var buf bytes.Buffer
+	if err := g.templates.ExecuteTemplate(&buf, "grpcroute.yaml.tmpl", data); err != nil {
+		panic(fmt.Sprintf("failed to execute grpcroute template: %v", err))
+	}
+	return buf.String()
 }
 
 // GenerateTLSSecrets generates self-signed TLS certificates
@@ -274,19 +275,16 @@ func (g *Generator) GenerateTLSSecrets(services []types.ServiceConfig) (string, 
 	certBase64 := base64.StdEncoding.EncodeToString(certPEM)
 	keyBase64 := base64.StdEncoding.EncodeToString(keyPEM)
 
-	return fmt.Sprintf(`apiVersion: v1
-kind: Secret
-metadata:
-  name: gateway-tls-cert
-  namespace: default
-type: kubernetes.io/tls
-data:
-  tls.crt: %s
-  tls.key: %s
-`,
-		certBase64,
-		keyBase64,
-	), nil
+	data := tlsSecretData{
+		CertBase64: certBase64,
+		KeyBase64:  keyBase64,
+	}
+
+	var buf bytes.Buffer
+	if err := g.templates.ExecuteTemplate(&buf, "secret-tls.yaml.tmpl", data); err != nil {
+		return "", fmt.Errorf("failed to execute tls secret template: %w", err)
+	}
+	return buf.String(), nil
 }
 
 // GenerateReferenceGrants generates ReferenceGrant manifests for cross-namespace access
@@ -303,36 +301,21 @@ func (g *Generator) GenerateReferenceGrants(services []types.ServiceConfig) stri
 		return ""
 	}
 
-	var b strings.Builder
-	first := true
+	var grants []referenceGrant
 	for ns := range namespaces {
-		if !first {
-			b.WriteString("---\n")
-		}
-		first = false
-
-		b.WriteString(fmt.Sprintf(`apiVersion: gateway.networking.k8s.io/v1beta1
-kind: ReferenceGrant
-metadata:
-  name: %s-to-%s
-  namespace: %s
-spec:
-  from:
-  - group: gateway.networking.k8s.io
-    kind: HTTPRoute
-    namespace: default
-  - group: gateway.networking.k8s.io
-    kind: GRPCRoute
-    namespace: default
-  to:
-  - group: ""
-    kind: Service
-`,
-			g.spec.App.Name,
-			ns,
-			ns,
-		))
+		grants = append(grants, referenceGrant{
+			Name:      fmt.Sprintf("%s-to-%s", g.spec.App.Name, ns),
+			Namespace: ns,
+		})
 	}
 
-	return b.String()
+	data := referenceGrantsData{
+		Grants: grants,
+	}
+
+	var buf bytes.Buffer
+	if err := g.templates.ExecuteTemplate(&buf, "referencegrant.yaml.tmpl", data); err != nil {
+		panic(fmt.Sprintf("failed to execute referencegrant template: %v", err))
+	}
+	return buf.String()
 }

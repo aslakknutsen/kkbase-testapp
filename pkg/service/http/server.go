@@ -56,6 +56,9 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// Create response
 	resp := service.NewResponse(s.config, "http")
 
+	// Capture the request URL (path + query string)
+	resp.URL = r.URL.RequestURI()
+
 	// Get trace IDs
 	if spanCtx := span.SpanContext(); spanCtx.IsValid() {
 		resp.TraceID = spanCtx.TraceID().String()
@@ -136,12 +139,14 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	s.sendResponse(w, resp, 200, span, start)
 }
 
-// resultToUpstreamCall converts a client.Result to service.UpstreamCall
-func (s *Server) resultToUpstreamCall(result client.Result) service.UpstreamCall {
-	call := service.UpstreamCall{
-		Name:             result.Name,
-		URI:              result.URI,
-		Protocol:         result.Protocol,
+// resultToUpstreamCall converts a client.Result to service.Response (for upstream calls)
+func (s *Server) resultToUpstreamCall(result client.Result) service.Response {
+	call := service.Response{
+		Service: &service.ServiceInfo{
+			Name:     result.Name,
+			Protocol: result.Protocol,
+		},
+		URL:              result.URL,
 		Code:             result.Code,
 		Duration:         result.Duration.String(),
 		Error:            result.Error,
@@ -150,7 +155,7 @@ func (s *Server) resultToUpstreamCall(result client.Result) service.UpstreamCall
 
 	// Convert nested calls
 	if len(result.UpstreamCalls) > 0 {
-		call.UpstreamCalls = make([]service.UpstreamCall, len(result.UpstreamCalls))
+		call.UpstreamCalls = make([]service.Response, len(result.UpstreamCalls))
 		for i, uc := range result.UpstreamCalls {
 			call.UpstreamCalls[i] = s.resultToUpstreamCall(uc)
 		}
@@ -218,8 +223,8 @@ func (s *Server) stripMatchedPrefix(path string, upstream *service.UpstreamConfi
 }
 
 // callMatchedUpstreams calls the matched upstreams with path stripping
-func (s *Server) callMatchedUpstreams(ctx context.Context, upstreams map[string]*service.UpstreamConfig, requestPath string, behaviorStr string) []service.UpstreamCall {
-	var calls []service.UpstreamCall
+func (s *Server) callMatchedUpstreams(ctx context.Context, upstreams map[string]*service.UpstreamConfig, requestPath string, behaviorStr string) []service.Response {
+	var calls []service.Response
 
 	for name, upstream := range upstreams {
 		// Strip matched prefix from path
@@ -236,7 +241,7 @@ func (s *Server) callMatchedUpstreams(ctx context.Context, upstreams map[string]
 		// Use shared caller with behavior propagation
 		result := s.caller.Call(ctx, name, upstreamWithPath, behaviorStr)
 
-		// Convert to service.UpstreamCall and record metrics
+		// Convert to service.Response (upstream call) and record metrics
 		call := s.resultToUpstreamCall(result)
 		s.telemetry.RecordUpstreamCall(name, call.Code, result.Duration)
 

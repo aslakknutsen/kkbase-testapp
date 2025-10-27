@@ -1,0 +1,318 @@
+app:
+  name: shopflow-ecommerce
+  namespaces:
+    - sf-gateway
+    - sf-products
+    - sf-users
+    - sf-shopping
+    - sf-orders
+    - sf-payments
+    - sf-infra
+
+services:
+  # ============================================================================
+  # Gateway Layer - Single entry point for all client requests
+  # ============================================================================
+  - name: api-gateway
+    namespace: sf-gateway
+    replicas: 3
+    protocols: [http]
+    upstreams:
+      - name: product-catalog
+        paths: [/api/v1/products, /api/v1/catalog]
+      - name: search
+        paths: [/api/v1/search]
+      - name: reviews
+        paths: [/api/v1/reviews]
+      - name: user-management
+        paths: [/api/v1/account, /api/v1/users]
+      - name: shopping-cart
+        paths: [/api/v1/cart]
+      - name: checkout
+        paths: [/api/v1/checkout]
+      - name: order-management
+        paths: [/api/v1/orders]
+    ingress:
+      enabled: true
+      host: shopflow.local
+      tls: true
+      paths:
+        - /api/v1
+    behavior:
+      latency: "5-15ms"
+    resources:
+      requests:
+        cpu: "10m"
+        memory: "32Mi"
+      limits:
+        cpu: "50m"
+        memory: "64Mi"
+
+  # ============================================================================
+  # Product & Discovery Services - How customers find products
+  # ============================================================================
+  
+  - name: product-catalog
+    namespace: sf-products
+    replicas: 3
+    protocols: [http, grpc]
+    upstreams:
+      - name: inventory
+      - name: search
+      - name: message-bus
+        paths: [/events/ProductUpdated, /events/PriceChanged]
+    behavior:
+      latency: "15-50ms"
+      errorRate: 0.01
+    resources:
+      requests:
+        cpu: "10m"
+        memory: "32Mi"
+      limits:
+        cpu: "50m"
+        memory: "64Mi"
+
+  - name: search
+    namespace: sf-products
+    replicas: 3
+    protocols: [http]
+    upstreams: []
+    behavior:
+      latency: "20-80ms"
+      errorRate: 0.015
+    resources:
+      requests:
+        cpu: "10m"
+        memory: "32Mi"
+      limits:
+        cpu: "50m"
+        memory: "64Mi"
+    labels:
+      component: search-engine
+
+  - name: inventory
+    namespace: sf-products
+    replicas: 2
+    protocols: [grpc]
+    upstreams:
+      - name: message-bus
+        paths: [/events/StockReserved, /events/StockReservationFailed, /events/StockLevelLow]
+    behavior:
+      latency: "10-40ms"
+      errorRate: 0.008
+    resources:
+      requests:
+        cpu: "10m"
+        memory: "32Mi"
+      limits:
+        cpu: "50m"
+        memory: "64Mi"
+
+  - name: reviews
+    namespace: sf-products
+    replicas: 2
+    protocols: [http]
+    upstreams: []
+    behavior:
+      latency: "15-60ms"
+      errorRate: 0.02
+    resources:
+      requests:
+        cpu: "10m"
+        memory: "32Mi"
+      limits:
+        cpu: "50m"
+        memory: "64Mi"
+
+  # ============================================================================
+  # User & Account Services - Customer identity and personalization
+  # ============================================================================
+  
+  - name: user-management
+    namespace: sf-users
+    replicas: 3
+    protocols: [http, grpc]
+    upstreams: []
+    behavior:
+      latency: "10-35ms"
+      errorRate: 0.005
+    resources:
+      requests:
+        cpu: "10m"
+        memory: "32Mi"
+      limits:
+        cpu: "50m"
+        memory: "64Mi"
+    labels:
+      security: high
+      pii: enabled
+
+  # ============================================================================
+  # Transaction Services - Shopping experience
+  # ============================================================================
+  
+  - name: shopping-cart
+    namespace: sf-shopping
+    replicas: 3
+    protocols: [http]
+    upstreams:
+      - name: inventory
+    behavior:
+      latency: "12-45ms"
+      errorRate: 0.01
+    resources:
+      requests:
+        cpu: "10m"
+        memory: "32Mi"
+      limits:
+        cpu: "50m"
+        memory: "64Mi"
+
+  - name: checkout
+    namespace: sf-shopping
+    replicas: 3
+    protocols: [http, grpc]
+    upstreams:
+      - name: order-management
+    behavior:
+      latency: "25-100ms"
+      errorRate: 0.008
+    resources:
+      requests:
+        cpu: "10m"
+        memory: "32Mi"
+      limits:
+        cpu: "50m"
+        memory: "64Mi"
+    labels:
+      critical: enabled
+
+  # ============================================================================
+  # Order & Fulfillment Services - Order processing saga
+  # ============================================================================
+  
+  - name: order-management
+    namespace: sf-orders
+    replicas: 3
+    protocols: [grpc]
+    upstreams:
+      - name: payment
+      - name: inventory
+      - name: shipping
+    behavior:
+      latency: "20-70ms"
+      errorRate: 0.01
+    resources:
+      requests:
+        cpu: "10m"
+        memory: "32Mi"
+      limits:
+        cpu: "50m"
+        memory: "64Mi"
+    labels:
+      critical: enabled
+
+  - name: shipping
+    namespace: sf-orders
+    replicas: 2
+    protocols: [http]
+    upstreams:
+      - name: message-bus
+        paths: [/events/OrderShipped, /events/OrderDelivered]
+    behavior:
+      latency: "30-120ms"
+      errorRate: 0.015
+    resources:
+      requests:
+        cpu: "10m"
+        memory: "32Mi"
+      limits:
+        cpu: "50m"
+        memory: "64Mi"
+
+  # ============================================================================
+  # Payment Services - Payment processing
+  # ============================================================================
+  
+  - name: payment
+    namespace: sf-payments
+    replicas: 3
+    protocols: [grpc]
+    upstreams:
+      - name: message-bus
+        paths: [/events/PaymentProcessed, /events/PaymentFailed, /events/PaymentRefunded]
+    behavior:
+      latency: "50-200ms"
+      errorRate: 0.005
+    resources:
+      requests:
+        cpu: "10m"
+        memory: "32Mi"
+      limits:
+        cpu: "50m"
+        memory: "64Mi"
+    labels:
+      security: high
+      critical: enabled
+      pci-compliant: enabled
+
+  # ============================================================================
+  # Infrastructure Services - Event bus and notifications
+  # ============================================================================
+  
+  - name: message-bus
+    namespace: sf-infra
+    replicas: 3
+    protocols: [http]
+    upstreams:
+      # Event routing configuration - simulates async event delivery to notification service
+      # The message-bus acts as a fan-out to notification for all events
+      - name: notification
+        paths: [/events/OrderCreated, /events/OrderUpdated, /events/OrderCancelled]
+      - name: notification
+        paths: [/events/PaymentProcessed, /events/PaymentFailed, /events/PaymentRefunded]
+      - name: notification
+        paths: [/events/StockReserved, /events/StockReservationFailed, /events/StockLevelLow]
+      - name: notification
+        paths: [/events/OrderShipped, /events/OrderDelivered]
+      - name: notification
+        paths: [/events/ProductUpdated, /events/PriceChanged]
+    behavior:
+      latency: "2-10ms"
+      errorRate: 0.002
+    resources:
+      requests:
+        cpu: "10m"
+        memory: "32Mi"
+      limits:
+        cpu: "50m"
+        memory: "64Mi"
+    labels:
+      component: event-bus
+      critical: enabled
+
+  - name: notification
+    namespace: sf-infra
+    replicas: 2
+    protocols: [http]
+    upstreams: []
+    behavior:
+      latency: "80-250ms"
+      errorRate: 0.02
+    resources:
+      requests:
+        cpu: "10m"
+        memory: "32Mi"
+      limits:
+        cpu: "50m"
+        memory: "64Mi"
+    labels:
+      component: notification-service
+
+traffic:
+  - name: api-traffic
+    target: api-gateway
+    rate: "200/s"
+    pattern: diurnal
+    duration: 24h
+

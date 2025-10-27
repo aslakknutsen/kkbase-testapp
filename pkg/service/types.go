@@ -3,17 +3,20 @@ package service
 import "time"
 
 // Response represents the standard response structure
+// Also used to represent upstream calls (where it captures another service's response)
 type Response struct {
-	Service          *ServiceInfo   `json:"service"`
-	StartTime        string         `json:"start_time"`
-	EndTime          string         `json:"end_time"`
-	Duration         string         `json:"duration"`
-	Code             int            `json:"code"`
-	Body             string         `json:"body,omitempty"`
-	TraceID          string         `json:"trace_id,omitempty"`
-	SpanID           string         `json:"span_id,omitempty"`
-	UpstreamCalls    []UpstreamCall `json:"upstream_calls,omitempty"`
-	BehaviorsApplied []string       `json:"behaviors_applied,omitempty"`
+	Service          *ServiceInfo `json:"service,omitempty"` // Service info (nil for upstream call stubs)
+	URL              string       `json:"url,omitempty"`     // URL that was called (may include path for HTTP)
+	StartTime        string       `json:"start_time,omitempty"`
+	EndTime          string       `json:"end_time,omitempty"`
+	Duration         string       `json:"duration"`
+	Code             int          `json:"code"`
+	Body             string       `json:"body,omitempty"`
+	Error            string       `json:"error,omitempty"` // Error message (for failed calls)
+	TraceID          string       `json:"trace_id,omitempty"`
+	SpanID           string       `json:"span_id,omitempty"`
+	UpstreamCalls    []Response   `json:"upstream_calls,omitempty"` // Recursive: upstream responses
+	BehaviorsApplied []string     `json:"behaviors_applied,omitempty"`
 }
 
 // ServiceInfo describes the service
@@ -24,18 +27,6 @@ type ServiceInfo struct {
 	Pod       string `json:"pod,omitempty"`
 	Node      string `json:"node,omitempty"`
 	Protocol  string `json:"protocol"`
-}
-
-// UpstreamCall represents a call to an upstream service
-type UpstreamCall struct {
-	Name             string         `json:"name"`
-	URI              string         `json:"uri"`
-	Protocol         string         `json:"protocol"`
-	Duration         string         `json:"duration"`
-	Code             int            `json:"code"`
-	Error            string         `json:"error,omitempty"`
-	BehaviorsApplied []string       `json:"behaviors_applied,omitempty"`
-	UpstreamCalls    []UpstreamCall `json:"upstream_calls,omitempty"`
 }
 
 // NewResponse creates a new response with service info
@@ -51,7 +42,7 @@ func NewResponse(cfg *Config, protocol string) *Response {
 			Protocol:  protocol,
 		},
 		StartTime:        now.Format(time.RFC3339Nano),
-		UpstreamCalls:    []UpstreamCall{},
+		UpstreamCalls:    []Response{},
 		BehaviorsApplied: []string{},
 	}
 }

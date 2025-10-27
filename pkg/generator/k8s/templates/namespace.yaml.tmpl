@@ -1,0 +1,12 @@
+{{- range $i, $ns := .Namespaces -}}
+{{- if $i }}
+---
+{{ end -}}
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: {{ $ns }}
+  labels:
+    app: {{ $.AppName }}
+{{ end -}}
+

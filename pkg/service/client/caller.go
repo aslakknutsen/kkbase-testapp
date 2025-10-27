@@ -22,7 +22,7 @@ import (
 // Result represents the standardized result of an upstream call
 type Result struct {
 	Name             string
-	URI              string
+	URL              string
 	Protocol         string
 	Duration         time.Duration
 	Code             int
@@ -64,7 +64,7 @@ func (c *Caller) Call(ctx context.Context, name string, upstream *service.Upstre
 
 	result := Result{
 		Name:     name,
-		URI:      upstream.URL,
+		URL:      upstream.URL,
 		Protocol: upstream.Protocol,
 	}
 
@@ -96,7 +96,7 @@ func (c *Caller) Call(ctx context.Context, name string, upstream *service.Upstre
 func (c *Caller) callHTTP(ctx context.Context, name string, upstream *service.UpstreamConfig, behaviorStr string, span trace.Span, start time.Time) Result {
 	result := Result{
 		Name:     name,
-		URI:      upstream.URL,
+		URL:      upstream.URL,
 		Protocol: "http",
 	}
 
@@ -139,32 +139,37 @@ func (c *Caller) callHTTP(ctx context.Context, name string, upstream *service.Up
 	result.Code = resp.StatusCode
 
 	// Try to parse response for nested upstream calls and behaviors
+	// Use the existing service.Response type which is already recursive
 	var httpResp struct {
-		BehaviorsApplied []string `json:"behaviors_applied,omitempty"`
-		UpstreamCalls    []struct {
-			Name             string   `json:"name"`
-			URI              string   `json:"uri"`
-			Protocol         string   `json:"protocol"`
-			Duration         string   `json:"duration"`
-			Code             int      `json:"code"`
-			Error            string   `json:"error,omitempty"`
-			BehaviorsApplied []string `json:"behaviors_applied,omitempty"`
-		} `json:"upstream_calls,omitempty"`
+		BehaviorsApplied []string           `json:"behaviors_applied,omitempty"`
+		UpstreamCalls    []service.Response `json:"upstream_calls,omitempty"`
 	}
 
 	if err := json.NewDecoder(resp.Body).Decode(&httpResp); err == nil {
 		result.BehaviorsApplied = httpResp.BehaviorsApplied
-		for _, uc := range httpResp.UpstreamCalls {
+
+		// Recursive function to convert service.Response to Result
+		var convertUpstreamCall func(service.Response) Result
+		convertUpstreamCall = func(uc service.Response) Result {
 			duration, _ := time.ParseDuration(uc.Duration)
-			result.UpstreamCalls = append(result.UpstreamCalls, Result{
-				Name:             uc.Name,
-				URI:              uc.URI,
-				Protocol:         uc.Protocol,
+			r := Result{
+				Name:             uc.Service.Name,
+				URL:              uc.URL,
+				Protocol:         uc.Service.Protocol,
 				Duration:         duration,
 				Code:             uc.Code,
 				Error:            uc.Error,
 				BehaviorsApplied: uc.BehaviorsApplied,
-			})
+			}
+			// Recursively convert nested upstream calls
+			for _, nested := range uc.UpstreamCalls {
+				r.UpstreamCalls = append(r.UpstreamCalls, convertUpstreamCall(nested))
+			}
+			return r
+		}
+
+		for _, uc := range httpResp.UpstreamCalls {
+			result.UpstreamCalls = append(result.UpstreamCalls, convertUpstreamCall(uc))
 		}
 	}
 
@@ -175,12 +180,18 @@ func (c *Caller) callHTTP(ctx context.Context, name string, upstream *service.Up
 func (c *Caller) callGRPC(ctx context.Context, name string, upstream *service.UpstreamConfig, behaviorStr string, span trace.Span, start time.Time) Result {
 	result := Result{
 		Name:     name,
-		URI:      upstream.URL,
+		URL:      upstream.URL,
 		Protocol: "grpc",
 	}
 
 	// Extract target from grpc://host:port URL
 	target := strings.TrimPrefix(upstream.URL, "grpc://")
+
+	// gRPC doesn't use URL paths like HTTP does, strip any trailing path
+	// (e.g., "host:9090/" becomes "host:9090")
+	if idx := strings.Index(target, "/"); idx != -1 {
+		target = target[:idx]
+	}
 
 	// Create gRPC connection
 	conn, err := grpc.Dial(target, grpc.WithInsecure())
@@ -221,7 +232,7 @@ func (c *Caller) callGRPC(ctx context.Context, name string, upstream *service.Up
 			// Recursively convert nested calls
 			nestedResult := Result{
 				Name:             uc.Name,
-				URI:              uc.Uri,
+				URL:              uc.Uri,
 				Protocol:         uc.Protocol,
 				Duration:         duration,
 				Code:             int(uc.Code),
@@ -246,7 +257,7 @@ func convertUpstreamCalls(pbCalls []*pb.UpstreamCall) []Result {
 		duration, _ := time.ParseDuration(uc.Duration)
 		result := Result{
 			Name:             uc.Name,
-			URI:              uc.Uri,
+			URL:              uc.Uri,
 			Protocol:         uc.Protocol,
 			Duration:         duration,
 			Code:             int(uc.Code),

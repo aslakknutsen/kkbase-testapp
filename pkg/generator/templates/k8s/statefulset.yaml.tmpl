@@ -1,0 +1,75 @@
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ .Name }}
+  namespace: {{ .Namespace }}
+  labels:
+{{- range $key, $value := .Labels }}
+    {{ $key }}: {{ $value }}
+{{- end }}
+spec:
+  serviceName: {{ .Name }}
+  replicas: {{ .Replicas }}
+  selector:
+    matchLabels:
+      app: {{ .Name }}
+  template:
+    metadata:
+      labels:
+{{- range $key, $value := .Labels }}
+        {{ $key }}: {{ $value }}
+{{- end }}
+    spec:
+      containers:
+      - name: testservice
+        image: {{ .Image }}
+        imagePullPolicy: Always
+        ports:
+{{- range .Ports }}
+        - containerPort: {{ .ContainerPort }}
+          name: {{ .Name }}
+          protocol: {{ .Protocol }}
+{{- end }}
+        env:
+{{- range .EnvVars }}
+        - name: {{ .Name }}
+{{- if .Value }}
+          value: "{{ .Value }}"
+{{- else if .ValueFrom }}
+          valueFrom:
+{{ .ValueFrom | indent 12 }}
+{{- end }}
+{{- end }}
+        resources:
+          requests:
+            cpu: {{ .Resources.Requests.CPU }}
+            memory: {{ .Resources.Requests.Memory }}
+          limits:
+            cpu: {{ .Resources.Limits.CPU }}
+            memory: {{ .Resources.Limits.Memory }}
+{{- if .Probes }}
+        livenessProbe:
+          httpGet:
+            path: {{ .Probes.Liveness.Path }}
+            port: {{ .Probes.Liveness.Port }}
+          initialDelaySeconds: {{ .Probes.Liveness.InitialDelaySeconds }}
+          periodSeconds: {{ .Probes.Liveness.PeriodSeconds }}
+        readinessProbe:
+          httpGet:
+            path: {{ .Probes.Readiness.Path }}
+            port: {{ .Probes.Readiness.Port }}
+          initialDelaySeconds: {{ .Probes.Readiness.InitialDelaySeconds }}
+          periodSeconds: {{ .Probes.Readiness.PeriodSeconds }}
+{{- end }}
+        volumeMounts:
+        - name: data
+          mountPath: /data
+  volumeClaimTemplates:
+  - metadata:
+      name: data
+    spec:
+      accessModes: [ "ReadWriteOnce" ]
+      resources:
+        requests:
+          storage: {{ .Storage.Size }}
+

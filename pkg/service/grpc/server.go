@@ -120,8 +120,21 @@ func (s *Server) callAllUpstreams(ctx context.Context, behaviorStr string) []*pb
 	var calls []*pb.UpstreamCall
 
 	for name, upstream := range s.config.Upstreams {
+		upstreamToCall := upstream
+
+		// If upstream has paths configured and is HTTP, append the first path
+		// (gRPC doesn't use URL paths, so only do this for non-gRPC upstreams)
+		if len(upstream.Paths) > 0 && upstream.Protocol != "grpc" {
+			upstreamToCall = &service.UpstreamConfig{
+				Name:     upstream.Name,
+				URL:      upstream.URL + upstream.Paths[0], // Use first configured path
+				Protocol: upstream.Protocol,
+				Paths:    upstream.Paths,
+			}
+		}
+
 		// Use shared caller with behavior propagation
-		result := s.caller.Call(ctx, name, upstream, behaviorStr)
+		result := s.caller.Call(ctx, name, upstreamToCall, behaviorStr)
 
 		// Convert to pb.UpstreamCall and record metrics
 		call := s.resultToUpstreamCall(result)
@@ -137,7 +150,7 @@ func (s *Server) callAllUpstreams(ctx context.Context, behaviorStr string) []*pb
 func (s *Server) resultToUpstreamCall(result client.Result) *pb.UpstreamCall {
 	call := &pb.UpstreamCall{
 		Name:             result.Name,
-		Uri:              result.URI,
+		Uri:              result.URL,
 		Protocol:         result.Protocol,
 		Code:             int32(result.Code),
 		Duration:         result.Duration.String(),

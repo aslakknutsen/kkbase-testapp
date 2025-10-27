@@ -1,17 +1,100 @@
 package k8s
 
 import (
+	"bytes"
+	"embed"
 	"fmt"
-	"strconv"
 	"strings"
+	"text/template"
 
 	"github.com/kagenti/kkbase/testapp/pkg/dsl/types"
 )
 
+//go:embed templates/*.tmpl
+var templatesFS embed.FS
+
 // Generator generates Kubernetes manifests
 type Generator struct {
-	spec  *types.AppSpec
-	image string // TestService container image
+	spec      *types.AppSpec
+	image     string // TestService container image
+	templates *template.Template
+}
+
+// Template data structures
+type namespaceData struct {
+	AppName    string
+	Namespaces []string
+}
+
+type workloadData struct {
+	Name      string
+	Namespace string
+	Labels    map[string]string
+	Replicas  int
+	Image     string
+	Ports     []portData
+	EnvVars   []envVarData
+	Resources resourcesData
+	Probes    *probesData
+	Storage   *storageData
+}
+
+type portData struct {
+	ContainerPort int
+	Name          string
+	Protocol      string
+}
+
+type envVarData struct {
+	Name      string
+	Value     string
+	ValueFrom string
+}
+
+type resourcesData struct {
+	Requests resourceQuantity
+	Limits   resourceQuantity
+}
+
+type resourceQuantity struct {
+	CPU    string
+	Memory string
+}
+
+type probesData struct {
+	Liveness  probeConfig
+	Readiness probeConfig
+}
+
+type probeConfig struct {
+	Path                string
+	Port                int
+	InitialDelaySeconds int
+	PeriodSeconds       int
+}
+
+type storageData struct {
+	Size string
+}
+
+type serviceData struct {
+	Name      string
+	Namespace string
+	Labels    map[string]string
+	Ports     []servicePortData
+}
+
+type servicePortData struct {
+	Name       string
+	Port       int
+	TargetPort string
+	Protocol   string
+}
+
+type serviceMonitorData struct {
+	Name      string
+	Namespace string
+	Labels    map[string]string
 }
 
 // NewGenerator creates a new Kubernetes manifest generator
@@ -19,9 +102,25 @@ func NewGenerator(spec *types.AppSpec, image string) *Generator {
 	if image == "" {
 		image = "testservice:latest"
 	}
+
+	// Parse templates with custom functions
+	tmpl := template.Must(template.New("k8s").Funcs(template.FuncMap{
+		"indent": func(spaces int, s string) string {
+			indent := strings.Repeat(" ", spaces)
+			lines := strings.Split(s, "\n")
+			for i, line := range lines {
+				if line != "" {
+					lines[i] = indent + line
+				}
+			}
+			return strings.Join(lines, "\n")
+		},
+	}).ParseFS(templatesFS, "templates/*.tmpl"))
+
 	return &Generator{
-		spec:  spec,
-		image: image,
+		spec:      spec,
+		image:     image,
+		templates: tmpl,
 	}
 }
 
@@ -50,8 +149,6 @@ func (g *Generator) GenerateAll() (map[string]string, error) {
 		// ServiceMonitor
 		monitor := g.GenerateServiceMonitor(&svc)
 		manifests[fmt.Sprintf("%s-servicemonitor.yaml", prefix)] = monitor
-
-		// PVC for StatefulSet (embedded in workload spec)
 	}
 
 	return manifests, nil
@@ -59,20 +156,16 @@ func (g *Generator) GenerateAll() (map[string]string, error) {
 
 // GenerateNamespaces generates namespace manifests
 func (g *Generator) GenerateNamespaces() string {
-	var b strings.Builder
-	for i, ns := range g.spec.App.Namespaces {
-		if i > 0 {
-			b.WriteString("---\n")
-		}
-		b.WriteString(fmt.Sprintf(`apiVersion: v1
-kind: Namespace
-metadata:
-  name: %s
-  labels:
-    app: %s
-`, ns, g.spec.App.Name))
+	data := namespaceData{
+		AppName:    g.spec.App.Name,
+		Namespaces: g.spec.App.Namespaces,
 	}
-	return b.String()
+
+	var buf bytes.Buffer
+	if err := g.templates.ExecuteTemplate(&buf, "namespace.yaml.tmpl", data); err != nil {
+		panic(fmt.Sprintf("failed to execute namespace template: %v", err))
+	}
+	return buf.String()
 }
 
 // GenerateWorkload generates Deployment, StatefulSet, or DaemonSet
@@ -89,227 +182,88 @@ func (g *Generator) GenerateWorkload(svc *types.ServiceConfig) string {
 
 // generateDeployment generates a Deployment manifest
 func (g *Generator) generateDeployment(svc *types.ServiceConfig) string {
-	metadataLabels := g.getLabels(svc, 4)
-	podLabels := g.getLabels(svc, 8)
-	envVars := g.getEnvVars(svc)
-	ports := g.getPorts(svc)
-	resources := g.getResources(svc)
-	probes := g.getProbes(svc)
+	data := g.buildWorkloadData(svc)
 
-	return fmt.Sprintf(`apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: %s
-  namespace: %s
-  labels:
-%s
-spec:
-  replicas: %d
-  selector:
-    matchLabels:
-      app: %s
-  template:
-    metadata:
-      labels:
-%s
-    spec:
-      containers:
-      - name: testservice
-        image: %s
-        imagePullPolicy: Always
-        ports:
-%s
-        env:
-%s
-        resources:
-%s%s
-`,
-		svc.Name,
-		svc.Namespace,
-		metadataLabels,
-		svc.Replicas,
-		svc.Name,
-		podLabels,
-		g.image,
-		ports,
-		envVars,
-		resources,
-		probes,
-	)
+	var buf bytes.Buffer
+	if err := g.templates.ExecuteTemplate(&buf, "deployment.yaml.tmpl", data); err != nil {
+		panic(fmt.Sprintf("failed to execute deployment template: %v", err))
+	}
+	return buf.String()
 }
 
 // generateStatefulSet generates a StatefulSet manifest
 func (g *Generator) generateStatefulSet(svc *types.ServiceConfig) string {
-	metadataLabels := g.getLabels(svc, 4)
-	podLabels := g.getLabels(svc, 8)
-	envVars := g.getEnvVars(svc)
-	ports := g.getPorts(svc)
-	resources := g.getResources(svc)
-	probes := g.getProbes(svc)
+	data := g.buildWorkloadData(svc)
+	data.Storage = &storageData{
+		Size: svc.Storage.Size,
+	}
 
-	return fmt.Sprintf(`apiVersion: apps/v1
-kind: StatefulSet
-metadata:
-  name: %s
-  namespace: %s
-  labels:
-%s
-spec:
-  serviceName: %s
-  replicas: %d
-  selector:
-    matchLabels:
-      app: %s
-  template:
-    metadata:
-      labels:
-%s
-    spec:
-      containers:
-      - name: testservice
-        image: %s
-        imagePullPolicy: Always
-        ports:
-%s
-        env:
-%s
-        resources:
-%s%s
-        volumeMounts:
-        - name: data
-          mountPath: /data
-  volumeClaimTemplates:
-  - metadata:
-      name: data
-    spec:
-      accessModes: [ "ReadWriteOnce" ]
-      resources:
-        requests:
-          storage: %s
-`,
-		svc.Name,
-		svc.Namespace,
-		metadataLabels,
-		svc.Name,
-		svc.Replicas,
-		svc.Name,
-		podLabels,
-		g.image,
-		ports,
-		envVars,
-		resources,
-		probes,
-		svc.Storage.Size,
-	)
+	var buf bytes.Buffer
+	if err := g.templates.ExecuteTemplate(&buf, "statefulset.yaml.tmpl", data); err != nil {
+		panic(fmt.Sprintf("failed to execute statefulset template: %v", err))
+	}
+	return buf.String()
 }
 
 // generateDaemonSet generates a DaemonSet manifest
 func (g *Generator) generateDaemonSet(svc *types.ServiceConfig) string {
-	metadataLabels := g.getLabels(svc, 4)
-	podLabels := g.getLabels(svc, 8)
-	envVars := g.getEnvVars(svc)
-	ports := g.getPorts(svc)
-	resources := g.getResources(svc)
-	probes := g.getProbes(svc)
+	data := g.buildWorkloadData(svc)
 
-	return fmt.Sprintf(`apiVersion: apps/v1
-kind: DaemonSet
-metadata:
-  name: %s
-  namespace: %s
-  labels:
-%s
-spec:
-  selector:
-    matchLabels:
-      app: %s
-  template:
-    metadata:
-      labels:
-%s
-    spec:
-      containers:
-      - name: testservice
-        image: %s
-        imagePullPolicy: Always
-        ports:
-%s
-        env:
-%s
-        resources:
-%s%s
-`,
-		svc.Name,
-		svc.Namespace,
-		metadataLabels,
-		svc.Name,
-		podLabels,
-		g.image,
-		ports,
-		envVars,
-		resources,
-		probes,
-	)
+	var buf bytes.Buffer
+	if err := g.templates.ExecuteTemplate(&buf, "daemonset.yaml.tmpl", data); err != nil {
+		panic(fmt.Sprintf("failed to execute daemonset template: %v", err))
+	}
+	return buf.String()
 }
 
 // GenerateService generates a Service manifest
 func (g *Generator) GenerateService(svc *types.ServiceConfig) string {
-	labels := g.getLabels(svc, 4)
-	ports := g.getServicePorts(svc)
+	data := serviceData{
+		Name:      svc.Name,
+		Namespace: svc.Namespace,
+		Labels:    g.getLabels(svc),
+		Ports:     g.getServicePorts(svc),
+	}
 
-	return fmt.Sprintf(`apiVersion: v1
-kind: Service
-metadata:
-  name: %s
-  namespace: %s
-  labels:
-%s
-spec:
-  type: ClusterIP
-  selector:
-    app: %s
-  ports:
-%s
-`,
-		svc.Name,
-		svc.Namespace,
-		labels,
-		svc.Name,
-		ports,
-	)
+	var buf bytes.Buffer
+	if err := g.templates.ExecuteTemplate(&buf, "service.yaml.tmpl", data); err != nil {
+		panic(fmt.Sprintf("failed to execute service template: %v", err))
+	}
+	return buf.String()
 }
 
 // GenerateServiceMonitor generates a ServiceMonitor for Prometheus
 func (g *Generator) GenerateServiceMonitor(svc *types.ServiceConfig) string {
-	labels := g.getLabels(svc, 4)
+	data := serviceMonitorData{
+		Name:      svc.Name,
+		Namespace: svc.Namespace,
+		Labels:    g.getLabels(svc),
+	}
 
-	return fmt.Sprintf(`apiVersion: monitoring.coreos.com/v1
-kind: ServiceMonitor
-metadata:
-  name: %s
-  namespace: %s
-  labels:
-%s
-spec:
-  selector:
-    matchLabels:
-      app: %s
-  endpoints:
-  - port: metrics
-    interval: 30s
-    path: /metrics
-`,
-		svc.Name,
-		svc.Namespace,
-		labels,
-		svc.Name,
-	)
+	var buf bytes.Buffer
+	if err := g.templates.ExecuteTemplate(&buf, "servicemonitor.yaml.tmpl", data); err != nil {
+		panic(fmt.Sprintf("failed to execute servicemonitor template: %v", err))
+	}
+	return buf.String()
 }
 
 // Helper methods
 
-func (g *Generator) getLabels(svc *types.ServiceConfig, indent int) string {
-	var b strings.Builder
+func (g *Generator) buildWorkloadData(svc *types.ServiceConfig) workloadData {
+	return workloadData{
+		Name:      svc.Name,
+		Namespace: svc.Namespace,
+		Labels:    g.getLabels(svc),
+		Replicas:  svc.Replicas,
+		Image:     g.image,
+		Ports:     g.getPorts(svc),
+		EnvVars:   g.getEnvVars(svc),
+		Resources: g.getResources(svc),
+		Probes:    g.getProbes(svc),
+	}
+}
+
+func (g *Generator) getLabels(svc *types.ServiceConfig) map[string]string {
 	labels := map[string]string{
 		"app":     svc.Name,
 		"version": "v1",
@@ -321,16 +275,38 @@ func (g *Generator) getLabels(svc *types.ServiceConfig, indent int) string {
 		labels[k] = v
 	}
 
-	indentStr := strings.Repeat(" ", indent)
-	for k, v := range labels {
-		b.WriteString(fmt.Sprintf("%s%s: %s\n", indentStr, k, v))
-	}
-	return b.String()
+	return labels
 }
 
-func (g *Generator) getEnvVars(svc *types.ServiceConfig) string {
-	var b strings.Builder
+func (g *Generator) getEnvVars(svc *types.ServiceConfig) []envVarData {
+	var envVars []envVarData
 
+	// Add downward API variables
+	envVars = append(envVars, envVarData{
+		Name: "NAMESPACE",
+		ValueFrom: `fieldRef:
+  fieldPath: metadata.namespace`,
+	})
+
+	envVars = append(envVars, envVarData{
+		Name: "POD_NAME",
+		ValueFrom: `fieldRef:
+  fieldPath: metadata.name`,
+	})
+
+	envVars = append(envVars, envVarData{
+		Name: "NODE_NAME",
+		ValueFrom: `fieldRef:
+  fieldPath: spec.nodeName`,
+	})
+
+	// Add OTEL endpoint
+	envVars = append(envVars, envVarData{
+		Name:  "OTEL_EXPORTER_OTLP_ENDPOINT",
+		Value: "jaeger-collector-otlp.observability.svc.cluster.local:4317",
+	})
+
+	// Add service-specific env vars
 	env := map[string]string{
 		"SERVICE_NAME":    svc.Name,
 		"SERVICE_VERSION": "1.0.0",
@@ -339,47 +315,32 @@ func (g *Generator) getEnvVars(svc *types.ServiceConfig) string {
 		"METRICS_PORT":    fmt.Sprintf("%d", svc.Ports.Metrics),
 	}
 
-	// Add namespace from downward API
-	b.WriteString("        - name: NAMESPACE\n")
-	b.WriteString("          valueFrom:\n")
-	b.WriteString("            fieldRef:\n")
-	b.WriteString("              fieldPath: metadata.namespace\n")
-
-	b.WriteString("        - name: POD_NAME\n")
-	b.WriteString("          valueFrom:\n")
-	b.WriteString("            fieldRef:\n")
-	b.WriteString("              fieldPath: metadata.name\n")
-
-	b.WriteString("        - name: NODE_NAME\n")
-	b.WriteString("          valueFrom:\n")
-	b.WriteString("            fieldRef:\n")
-	b.WriteString("              fieldPath: spec.nodeName\n")
-
-	// Add OTEL endpoint for tracing
-	b.WriteString("        - name: OTEL_EXPORTER_OTLP_ENDPOINT\n")
-	b.WriteString("          value: \"jaeger-collector-otlp.observability.svc.cluster.local:4317\"\n")
-
-	// Add regular env vars
 	for k, v := range env {
-		b.WriteString(fmt.Sprintf("        - name: %s\n", k))
-		b.WriteString(fmt.Sprintf("          value: \"%s\"\n", v))
+		envVars = append(envVars, envVarData{
+			Name:  k,
+			Value: v,
+		})
 	}
 
 	// Add upstreams
 	if len(svc.Upstreams) > 0 {
 		upstreams := g.buildUpstreamsEnv(svc)
-		b.WriteString(fmt.Sprintf("        - name: UPSTREAMS\n"))
-		b.WriteString(fmt.Sprintf("          value: \"%s\"\n", upstreams))
+		envVars = append(envVars, envVarData{
+			Name:  "UPSTREAMS",
+			Value: upstreams,
+		})
 	}
 
 	// Add behavior
 	if svc.Behavior.Latency != "" || svc.Behavior.ErrorRate > 0 {
 		behavior := g.buildBehaviorString(svc)
-		b.WriteString(fmt.Sprintf("        - name: DEFAULT_BEHAVIOR\n"))
-		b.WriteString(fmt.Sprintf("          value: \"%s\"\n", behavior))
+		envVars = append(envVars, envVarData{
+			Name:  "DEFAULT_BEHAVIOR",
+			Value: behavior,
+		})
 	}
 
-	return b.String()
+	return envVars
 }
 
 func (g *Generator) buildUpstreamsEnv(svc *types.ServiceConfig) string {
@@ -398,11 +359,12 @@ func (g *Generator) buildUpstreamsEnv(svc *types.ServiceConfig) string {
 					protocol, target.Name, target.Namespace, port)
 
 				// Add paths if configured
+				// Use = between name and URL to avoid confusion with : in URLs
 				if len(upstream.Paths) > 0 {
 					pathsStr := strings.Join(upstream.Paths, ",")
-					parts = append(parts, fmt.Sprintf("%s:%s:%s", upstream.Name, url, pathsStr))
+					parts = append(parts, fmt.Sprintf("%s=%s:%s", upstream.Name, url, pathsStr))
 				} else {
-					parts = append(parts, fmt.Sprintf("%s:%s", upstream.Name, url))
+					parts = append(parts, fmt.Sprintf("%s=%s", upstream.Name, url))
 				}
 				break
 			}
@@ -423,112 +385,110 @@ func (g *Generator) buildBehaviorString(svc *types.ServiceConfig) string {
 	return strings.Join(parts, ",")
 }
 
-func (g *Generator) getPorts(svc *types.ServiceConfig) string {
-	var b strings.Builder
+func (g *Generator) getPorts(svc *types.ServiceConfig) []portData {
+	var ports []portData
 
 	if svc.HasHTTP() {
-		b.WriteString(fmt.Sprintf("        - containerPort: %d\n", svc.Ports.HTTP))
-		b.WriteString("          name: http\n")
-		b.WriteString("          protocol: TCP\n")
+		ports = append(ports, portData{
+			ContainerPort: svc.Ports.HTTP,
+			Name:          "http",
+			Protocol:      "TCP",
+		})
 	}
 
 	if svc.HasGRPC() {
-		b.WriteString(fmt.Sprintf("        - containerPort: %d\n", svc.Ports.GRPC))
-		b.WriteString("          name: grpc\n")
-		b.WriteString("          protocol: TCP\n")
+		ports = append(ports, portData{
+			ContainerPort: svc.Ports.GRPC,
+			Name:          "grpc",
+			Protocol:      "TCP",
+		})
 	}
 
-	b.WriteString(fmt.Sprintf("        - containerPort: %d\n", svc.Ports.Metrics))
-	b.WriteString("          name: metrics\n")
-	b.WriteString("          protocol: TCP\n")
+	ports = append(ports, portData{
+		ContainerPort: svc.Ports.Metrics,
+		Name:          "metrics",
+		Protocol:      "TCP",
+	})
 
-	return b.String()
+	return ports
 }
 
-func (g *Generator) getServicePorts(svc *types.ServiceConfig) string {
-	var b strings.Builder
+func (g *Generator) getServicePorts(svc *types.ServiceConfig) []servicePortData {
+	var ports []servicePortData
 
 	if svc.HasHTTP() {
-		b.WriteString(fmt.Sprintf("  - name: http\n"))
-		b.WriteString(fmt.Sprintf("    port: %d\n", svc.Ports.HTTP))
-		b.WriteString(fmt.Sprintf("    targetPort: http\n"))
-		b.WriteString(fmt.Sprintf("    protocol: TCP\n"))
+		ports = append(ports, servicePortData{
+			Name:       "http",
+			Port:       svc.Ports.HTTP,
+			TargetPort: "http",
+			Protocol:   "TCP",
+		})
 	}
 
 	if svc.HasGRPC() {
-		b.WriteString("  - name: grpc\n")
-		b.WriteString("    port: ")
-		b.WriteString(strconv.Itoa(svc.Ports.GRPC))
-		b.WriteString("\n")
-		b.WriteString("    targetPort: grpc\n")
-		b.WriteString("    protocol: TCP\n")
+		ports = append(ports, servicePortData{
+			Name:       "grpc",
+			Port:       svc.Ports.GRPC,
+			TargetPort: "grpc",
+			Protocol:   "TCP",
+		})
 	}
 
-	b.WriteString(fmt.Sprintf("  - name: metrics\n"))
-	b.WriteString(fmt.Sprintf("    port: %d\n", svc.Ports.Metrics))
-	b.WriteString(fmt.Sprintf("    targetPort: metrics\n"))
-	b.WriteString(fmt.Sprintf("    protocol: TCP\n"))
+	ports = append(ports, servicePortData{
+		Name:       "metrics",
+		Port:       svc.Ports.Metrics,
+		TargetPort: "metrics",
+		Protocol:   "TCP",
+	})
 
-	return b.String()
+	return ports
 }
 
-func (g *Generator) getResources(svc *types.ServiceConfig) string {
+func (g *Generator) getResources(svc *types.ServiceConfig) resourcesData {
 	// Default resources
-	requests := map[string]string{
-		"cpu":    "100m",
-		"memory": "128Mi",
+	requests := resourceQuantity{
+		CPU:    "100m",
+		Memory: "128Mi",
 	}
-	limits := map[string]string{
-		"cpu":    "500m",
-		"memory": "512Mi",
+	limits := resourceQuantity{
+		CPU:    "500m",
+		Memory: "512Mi",
 	}
 
 	// Override with custom values
 	if svc.Resources.Requests.CPU != "" {
-		requests["cpu"] = svc.Resources.Requests.CPU
+		requests.CPU = svc.Resources.Requests.CPU
 	}
 	if svc.Resources.Requests.Memory != "" {
-		requests["memory"] = svc.Resources.Requests.Memory
+		requests.Memory = svc.Resources.Requests.Memory
 	}
 	if svc.Resources.Limits.CPU != "" {
-		limits["cpu"] = svc.Resources.Limits.CPU
+		limits.CPU = svc.Resources.Limits.CPU
 	}
 	if svc.Resources.Limits.Memory != "" {
-		limits["memory"] = svc.Resources.Limits.Memory
+		limits.Memory = svc.Resources.Limits.Memory
 	}
 
-	return fmt.Sprintf(`          requests:
-            cpu: %s
-            memory: %s
-          limits:
-            cpu: %s
-            memory: %s`,
-		requests["cpu"],
-		requests["memory"],
-		limits["cpu"],
-		limits["memory"],
-	)
+	return resourcesData{
+		Requests: requests,
+		Limits:   limits,
+	}
 }
 
-func (g *Generator) getProbes(svc *types.ServiceConfig) string {
+func (g *Generator) getProbes(svc *types.ServiceConfig) *probesData {
 	// TestService always exposes HTTP health endpoints for probes
-	// even if the main application protocol is gRPC
-	// Liveness: /health - checks if process is alive
-	// Readiness: /ready - checks if ready to accept traffic
-	return fmt.Sprintf(`
-        livenessProbe:
-          httpGet:
-            path: /health
-            port: %d
-          initialDelaySeconds: 10
-          periodSeconds: 10
-        readinessProbe:
-          httpGet:
-            path: /ready
-            port: %d
-          initialDelaySeconds: 5
-          periodSeconds: 5`,
-		svc.Ports.HTTP,
-		svc.Ports.HTTP,
-	)
+	return &probesData{
+		Liveness: probeConfig{
+			Path:                "/health",
+			Port:                svc.Ports.HTTP,
+			InitialDelaySeconds: 10,
+			PeriodSeconds:       10,
+		},
+		Readiness: probeConfig{
+			Path:                "/ready",
+			Port:                svc.Ports.HTTP,
+			InitialDelaySeconds: 5,
+			PeriodSeconds:       5,
+		},
+	}
 }
