@@ -3,6 +3,7 @@ package telemetry
 import (
 	"context"
 	"fmt"
+	"os"
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
@@ -13,10 +14,12 @@ import (
 	"go.opentelemetry.io/otel/propagation"
 	"go.opentelemetry.io/otel/sdk/resource"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
-	semconv "go.opentelemetry.io/otel/semconv/v1.17.0"
+	semconv "go.opentelemetry.io/otel/semconv/v1.24.0"
 	"go.opentelemetry.io/otel/trace"
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
+
+	"github.com/kagenti/kkbase/testapp/pkg/service"
 )
 
 // Telemetry holds all observability components
@@ -39,7 +42,7 @@ type Metrics struct {
 }
 
 // InitTelemetry initializes all telemetry components
-func InitTelemetry(serviceName, namespace, logLevel, otelEndpoint string) (*Telemetry, error) {
+func InitTelemetry(serviceName, namespace, logLevel, otelEndpoint string, cfg *service.Config) (*Telemetry, error) {
 	// Initialize logger
 	logger, err := initLogger(serviceName, namespace, logLevel)
 	if err != nil {
@@ -47,7 +50,7 @@ func InitTelemetry(serviceName, namespace, logLevel, otelEndpoint string) (*Tele
 	}
 
 	// Initialize tracer
-	tracer, err := initTracer(serviceName, namespace, otelEndpoint)
+	tracer, err := initTracer(serviceName, namespace, otelEndpoint, cfg)
 	if err != nil {
 		logger.Warn("Failed to init tracer, continuing without tracing", zap.Error(err))
 		tracer = otel.Tracer(serviceName)
@@ -100,7 +103,7 @@ func initLogger(serviceName, namespace, logLevel string) (*zap.Logger, error) {
 }
 
 // initTracer creates an OTEL tracer
-func initTracer(serviceName, namespace, endpoint string) (trace.Tracer, error) {
+func initTracer(serviceName, namespace, endpoint string, cfg *service.Config) (trace.Tracer, error) {
 	if endpoint == "" {
 		// No endpoint configured, return noop tracer
 		return otel.Tracer(serviceName), nil
@@ -117,12 +120,36 @@ func initTracer(serviceName, namespace, endpoint string) (trace.Tracer, error) {
 		return nil, fmt.Errorf("failed to create exporter: %w", err)
 	}
 
-	// Create resource
+	// Create resource with all available K8s attributes
+	attrs := []attribute.KeyValue{
+		semconv.ServiceName(serviceName),
+		semconv.ServiceNamespace(namespace),
+	}
+
+	// Service identity
+	if cfg.Version != "" {
+		attrs = append(attrs, semconv.ServiceVersion(cfg.Version))
+	}
+	if cfg.PodName != "" {
+		attrs = append(attrs, semconv.ServiceInstanceID(cfg.PodName))
+	}
+
+	// K8s metadata
+	if cfg.Namespace != "" {
+		attrs = append(attrs, semconv.K8SNamespaceName(cfg.Namespace))
+	}
+	if cfg.PodName != "" {
+		attrs = append(attrs, semconv.K8SPodName(cfg.PodName))
+	}
+	if podUID := os.Getenv("POD_UID"); podUID != "" {
+		attrs = append(attrs, semconv.K8SPodUID(podUID))
+	}
+	if cfg.NodeName != "" {
+		attrs = append(attrs, semconv.K8SNodeName(cfg.NodeName))
+	}
+
 	res, err := resource.New(ctx,
-		resource.WithAttributes(
-			semconv.ServiceName(serviceName),
-			semconv.ServiceNamespace(namespace),
-		),
+		resource.WithAttributes(attrs...),
 	)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create resource: %w", err)

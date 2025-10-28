@@ -5,15 +5,17 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/kagenti/kkbase/testapp/pkg/service"
 	pb "github.com/kagenti/kkbase/testapp/proto/testservice"
 	"go.opentelemetry.io/otel"
-	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/propagation"
+	semconv "go.opentelemetry.io/otel/semconv/v1.24.0"
 	"go.opentelemetry.io/otel/trace"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/metadata"
@@ -57,9 +59,8 @@ func (c *Caller) Call(ctx context.Context, name string, upstream *service.Upstre
 	ctx, span := c.tracer.Start(ctx, fmt.Sprintf("upstream.%s", name),
 		trace.WithSpanKind(trace.SpanKindClient),
 		trace.WithAttributes(
-			attribute.String("upstream.name", name),
-			attribute.String("upstream.protocol", upstream.Protocol),
-			attribute.String("upstream.url", upstream.URL),
+			semconv.NetworkProtocolName(upstream.Protocol),
+			semconv.NetworkTransportTCP,
 		),
 	)
 	defer span.End()
@@ -89,8 +90,6 @@ func (c *Caller) Call(ctx context.Context, name string, upstream *service.Upstre
 		span.SetStatus(codes.Ok, "")
 	}
 
-	span.SetAttributes(attribute.Int("http.status_code", result.Code))
-
 	return result
 }
 
@@ -103,26 +102,43 @@ func (c *Caller) callHTTP(ctx context.Context, name string, upstream *service.Up
 	}
 
 	// Ensure URL has http:// prefix
-	url := upstream.URL
-	if !strings.HasPrefix(url, "http://") && !strings.HasPrefix(url, "https://") {
-		url = "http://" + strings.TrimPrefix(url, "http://")
+	urlStr := upstream.URL
+	if !strings.HasPrefix(urlStr, "http://") && !strings.HasPrefix(urlStr, "https://") {
+		urlStr = "http://" + strings.TrimPrefix(urlStr, "http://")
 	}
 
 	// Add behavior as query parameter to propagate to upstream
 	if behaviorStr != "" {
-		if strings.Contains(url, "?") {
-			url = url + "&behavior=" + behaviorStr
+		if strings.Contains(urlStr, "?") {
+			urlStr = urlStr + "&behavior=" + behaviorStr
 		} else {
-			url = url + "?behavior=" + behaviorStr
+			urlStr = urlStr + "?behavior=" + behaviorStr
 		}
 	}
 
 	// Create request
-	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
+	req, err := http.NewRequestWithContext(ctx, "GET", urlStr, nil)
 	if err != nil {
 		result.Error = err.Error()
 		result.Code = 0
 		return result
+	}
+
+	// Update span name and add HTTP-specific span attributes
+	if parsedURL, err := url.Parse(urlStr); err == nil {
+		// Update span name to follow HTTP semantic conventions: {method} {path}
+		span.SetName(fmt.Sprintf("GET %s", parsedURL.Path))
+
+		span.SetAttributes(
+			semconv.HTTPRequestMethodOriginal("GET"),
+			semconv.URLFull(urlStr),
+			semconv.ServerAddress(parsedURL.Hostname()),
+		)
+		if port := parsedURL.Port(); port != "" {
+			if p, err := strconv.Atoi(port); err == nil {
+				span.SetAttributes(semconv.ServerPort(p))
+			}
+		}
 	}
 
 	// Propagate trace context via HTTP headers
@@ -139,6 +155,14 @@ func (c *Caller) callHTTP(ctx context.Context, name string, upstream *service.Up
 	defer resp.Body.Close()
 
 	result.Code = resp.StatusCode
+
+	// Add response status code attributes
+	span.SetAttributes(
+		semconv.HTTPResponseStatusCode(resp.StatusCode),
+	)
+	if resp.StatusCode >= 400 {
+		span.SetAttributes(semconv.ErrorTypeKey.String(fmt.Sprintf("%d", resp.StatusCode)))
+	}
 
 	// Read response body
 	bodyBytes, err := io.ReadAll(resp.Body)
@@ -182,6 +206,16 @@ func (c *Caller) callGRPC(ctx context.Context, name string, upstream *service.Up
 		target = target[:idx]
 	}
 
+	// Update span name and add gRPC-specific span attributes
+	// gRPC span name must follow: $package.$service/$method
+	span.SetName("testservice.TestService/Call")
+	span.SetAttributes(
+		semconv.RPCSystemGRPC,
+		semconv.RPCService("testservice.TestService"),
+		semconv.RPCMethod("Call"),
+		semconv.ServerAddress(target),
+	)
+
 	// Create gRPC connection
 	conn, err := grpc.Dial(target, grpc.WithInsecure())
 	if err != nil {
@@ -213,6 +247,9 @@ func (c *Caller) callGRPC(ctx context.Context, name string, upstream *service.Up
 	// Use the actual code from the response (could be 200, 500, etc.)
 	result.Code = int(resp.Code)
 	result.BehaviorsApplied = resp.BehaviorsApplied
+
+	// Add gRPC status code attributes
+	span.SetAttributes(semconv.RPCGRPCStatusCodeKey.Int(0)) // 0 = OK
 
 	// Convert nested gRPC upstream calls to Result
 	if len(resp.UpstreamCalls) > 0 {

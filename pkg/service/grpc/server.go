@@ -10,10 +10,12 @@ import (
 	"github.com/kagenti/kkbase/testapp/pkg/service/client"
 	"github.com/kagenti/kkbase/testapp/pkg/service/telemetry"
 	pb "github.com/kagenti/kkbase/testapp/proto/testservice"
-	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
+	semconv "go.opentelemetry.io/otel/semconv/v1.24.0"
 	"go.opentelemetry.io/otel/trace"
 	"go.uber.org/zap"
+	grpc_codes "google.golang.org/grpc/codes"
+	"google.golang.org/grpc/peer"
 )
 
 // Server implements the TestService gRPC server
@@ -40,10 +42,16 @@ func (s *Server) Call(ctx context.Context, req *pb.CallRequest) (*pb.ServiceResp
 	// Extract trace context from metadata
 	ctx = ExtractTraceContext(ctx)
 
-	// Start span
-	ctx, span := s.telemetry.StartServerSpan(ctx, "grpc.Call",
-		attribute.String("rpc.service", "TestService"),
-		attribute.String("rpc.method", "Call"),
+	// Start span with gRPC semantic naming: $package.$service/$method
+	ctx, span := s.telemetry.StartServerSpan(ctx, "testservice.TestService/Call",
+		semconv.RPCSystemGRPC,
+		semconv.RPCService("testservice.TestService"),
+		semconv.RPCMethod("Call"),
+		semconv.NetworkProtocolName("grpc"),
+		semconv.NetworkTransportTCP,
+		semconv.ServerAddress("localhost"),
+		semconv.ServerPort(s.config.GRPCPort),
+		semconv.ClientAddress(extractClientAddr(ctx)),
 	)
 	defer span.End()
 
@@ -90,6 +98,10 @@ func (s *Server) Call(ctx context.Context, req *pb.CallRequest) (*pb.ServiceResp
 			s.telemetry.RecordBehavior("error")
 			s.recordMetrics(statusCode, start)
 
+			span.SetAttributes(
+				semconv.RPCGRPCStatusCodeKey.Int(int(grpc_codes.Internal)),
+				semconv.ErrorTypeKey.String(fmt.Sprintf("grpc_%d", errCode)),
+			)
 			span.SetStatus(codes.Error, fmt.Sprintf("Injected error: %d", errCode))
 			return resp, nil
 		}
@@ -110,6 +122,7 @@ func (s *Server) Call(ctx context.Context, req *pb.CallRequest) (*pb.ServiceResp
 	resp.Body = fmt.Sprintf("Hello from %s (gRPC)", s.config.Name)
 
 	s.recordMetrics(200, start)
+	span.SetAttributes(semconv.RPCGRPCStatusCodeKey.Int(int(grpc_codes.OK)))
 	span.SetStatus(codes.Ok, "")
 
 	return resp, nil
@@ -210,4 +223,12 @@ func (s *Server) recordMetrics(statusCode int, start time.Time) {
 		zap.Int("status", statusCode),
 		zap.Duration("duration", duration),
 	)
+}
+
+// Helper function for extracting client address
+func extractClientAddr(ctx context.Context) string {
+	if p, ok := peer.FromContext(ctx); ok {
+		return p.Addr.String()
+	}
+	return ""
 }

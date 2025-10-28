@@ -300,6 +300,12 @@ func (g *Generator) getEnvVars(svc *types.ServiceConfig) []envVarData {
   fieldPath: spec.nodeName`,
 	})
 
+	envVars = append(envVars, envVarData{
+		Name: "POD_UID",
+		ValueFrom: `fieldRef:
+  fieldPath: metadata.uid`,
+	})
+
 	// Add OTEL endpoint
 	envVars = append(envVars, envVarData{
 		Name:  "OTEL_EXPORTER_OTLP_ENDPOINT",

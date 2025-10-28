@@ -3,7 +3,9 @@ package http
 import (
 	"context"
 	"fmt"
+	"net"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -13,9 +15,9 @@ import (
 	"github.com/kagenti/kkbase/testapp/pkg/service/telemetry"
 	pb "github.com/kagenti/kkbase/testapp/proto/testservice"
 	"go.opentelemetry.io/otel"
-	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/propagation"
+	semconv "go.opentelemetry.io/otel/semconv/v1.24.0"
 	"go.opentelemetry.io/otel/trace"
 	"go.uber.org/zap"
 	"google.golang.org/protobuf/encoding/protojson"
@@ -46,10 +48,19 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	propagator := otel.GetTextMapPropagator()
 	ctx = propagator.Extract(ctx, propagation.HeaderCarrier(r.Header))
 
-	// Start span
-	ctx, span := s.telemetry.StartServerSpan(ctx, "http.request",
-		attribute.String("http.method", r.Method),
-		attribute.String("http.path", r.URL.Path),
+	// Start span with HTTP semantic naming: {method} {route}
+	spanName := fmt.Sprintf("%s %s", r.Method, r.URL.Path)
+	ctx, span := s.telemetry.StartServerSpan(ctx, spanName,
+		semconv.HTTPRequestMethodOriginal(r.Method),
+		semconv.URLScheme(getScheme(r)),
+		semconv.URLPath(r.URL.Path),
+		semconv.ServerAddress(r.Host),
+		semconv.ServerPort(extractPort(r.Host, s.config.HTTPPort)),
+		semconv.NetworkProtocolName("http"),
+		semconv.NetworkProtocolVersion(extractHTTPVersion(r.Proto)),
+		semconv.NetworkTransportTCP,
+		semconv.ClientAddress(extractClientIP(r)),
+		semconv.UserAgentOriginal(r.UserAgent()),
 	)
 	defer span.End()
 
@@ -302,9 +313,52 @@ func (s *Server) sendResponse(w http.ResponseWriter, resp *pb.ServiceResponse, s
 		zap.Int("upstream_calls", len(resp.UpstreamCalls)),
 	)
 
+	// Set status code and error attributes
+	span.SetAttributes(semconv.HTTPResponseStatusCode(statusCode))
 	if statusCode >= 400 {
+		span.SetAttributes(semconv.ErrorTypeKey.String(fmt.Sprintf("%d", statusCode)))
 		span.SetStatus(codes.Error, fmt.Sprintf("HTTP %d", statusCode))
 	} else {
 		span.SetStatus(codes.Ok, "")
 	}
+}
+
+// Helper functions for extracting HTTP attributes
+
+func getScheme(r *http.Request) string {
+	if r.TLS != nil {
+		return "https"
+	}
+	if r.Header.Get("X-Forwarded-Proto") == "https" {
+		return "https"
+	}
+	return "http"
+}
+
+func extractPort(host string, defaultPort int) int {
+	_, portStr, err := net.SplitHostPort(host)
+	if err != nil {
+		return defaultPort
+	}
+	port, err := strconv.Atoi(portStr)
+	if err != nil {
+		return defaultPort
+	}
+	return port
+}
+
+func extractHTTPVersion(proto string) string {
+	return strings.TrimPrefix(proto, "HTTP/")
+}
+
+func extractClientIP(r *http.Request) string {
+	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
+		parts := strings.Split(xff, ",")
+		return strings.TrimSpace(parts[0])
+	}
+	if xri := r.Header.Get("X-Real-IP"); xri != "" {
+		return xri
+	}
+	host, _, _ := net.SplitHostPort(r.RemoteAddr)
+	return host
 }
