@@ -47,7 +47,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	ctx = propagator.Extract(ctx, propagation.HeaderCarrier(r.Header))
 
 	// Start span
-	ctx, span := s.telemetry.StartSpan(ctx, "http.request",
+	ctx, span := s.telemetry.StartServerSpan(ctx, "http.request",
 		attribute.String("http.method", r.Method),
 		attribute.String("http.path", r.URL.Path),
 	)

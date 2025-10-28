@@ -55,6 +55,7 @@ func (c *Caller) Call(ctx context.Context, name string, upstream *service.Upstre
 
 	// Start span for upstream call
 	ctx, span := c.tracer.Start(ctx, fmt.Sprintf("upstream.%s", name),
+		trace.WithSpanKind(trace.SpanKindClient),
 		trace.WithAttributes(
 			attribute.String("upstream.name", name),
 			attribute.String("upstream.protocol", upstream.Protocol),

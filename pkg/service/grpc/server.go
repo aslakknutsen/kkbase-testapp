@@ -41,7 +41,7 @@ func (s *Server) Call(ctx context.Context, req *pb.CallRequest) (*pb.ServiceResp
 	ctx = ExtractTraceContext(ctx)
 
 	// Start span
-	ctx, span := s.telemetry.StartSpan(ctx, "grpc.Call",
+	ctx, span := s.telemetry.StartServerSpan(ctx, "grpc.Call",
 		attribute.String("rpc.service", "TestService"),
 		attribute.String("rpc.method", "Call"),
 	)

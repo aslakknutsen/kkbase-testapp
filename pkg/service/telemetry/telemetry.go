@@ -246,3 +246,21 @@ func (t *Telemetry) DecActiveRequests(protocol string) {
 func (t *Telemetry) StartSpan(ctx context.Context, name string, attrs ...attribute.KeyValue) (context.Context, trace.Span) {
 	return t.Tracer.Start(ctx, name, trace.WithAttributes(attrs...))
 }
+
+// StartServerSpan starts a SERVER span for incoming requests
+func (t *Telemetry) StartServerSpan(ctx context.Context, name string, attrs ...attribute.KeyValue) (context.Context, trace.Span) {
+	opts := []trace.SpanStartOption{
+		trace.WithSpanKind(trace.SpanKindServer),
+		trace.WithAttributes(attrs...),
+	}
+	return t.Tracer.Start(ctx, name, opts...)
+}
+
+// StartClientSpan starts a CLIENT span for outgoing calls
+func (t *Telemetry) StartClientSpan(ctx context.Context, name string, attrs ...attribute.KeyValue) (context.Context, trace.Span) {
+	opts := []trace.SpanStartOption{
+		trace.WithSpanKind(trace.SpanKindClient),
+		trace.WithAttributes(attrs...),
+	}
+	return t.Tracer.Start(ctx, name, opts...)
+}
