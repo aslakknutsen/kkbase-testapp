@@ -99,7 +99,7 @@ func (b *Behavior) String() string {
 
 	if b.Error != nil && b.Error.Prob > 0 {
 		if b.Error.Rate != 500 {
-			parts = append(parts, fmt.Sprintf("error=%v,code=%d", b.Error.Prob, b.Error.Rate))
+			parts = append(parts, fmt.Sprintf("error=%d:%v", b.Error.Rate, b.Error.Prob))
 		} else {
 			parts = append(parts, fmt.Sprintf("error=%v", b.Error.Prob))
 		}
@@ -108,10 +108,7 @@ func (b *Behavior) String() string {
 	if b.CPU != nil {
 		cpuStr := fmt.Sprintf("cpu=%s", b.CPU.Pattern)
 		if b.CPU.Duration > 0 {
-			cpuStr += fmt.Sprintf(":%s", b.CPU.Duration)
-			if b.CPU.Intensity > 0 && b.CPU.Intensity != 80 { // 80 is default
-				cpuStr += fmt.Sprintf(":%d", b.CPU.Intensity)
-			}
+			cpuStr += fmt.Sprintf(":%s:%d", b.CPU.Duration, b.CPU.Intensity)
 		}
 		parts = append(parts, cpuStr)
 	}
@@ -124,7 +121,7 @@ func (b *Behavior) String() string {
 				memStr += fmt.Sprintf(":%s", b.Memory.Duration)
 			}
 		} else {
-			memStr = fmt.Sprintf("memory=%d", b.Memory.Amount)
+			memStr = fmt.Sprintf("memory=%s", formatBytes(b.Memory.Amount))
 		}
 		parts = append(parts, memStr)
 	}
@@ -420,6 +417,76 @@ func extractUnit(s string) string {
 	return ""
 }
 
+// formatBytes converts bytes to human-readable format (Mi, Gi)
+// e.g., 1048576 -> "1Mi", 1073741824 -> "1Gi"
+func formatBytes(bytes int64) string {
+	const (
+		_        = iota
+		KB int64 = 1 << (10 * iota)
+		MB
+		GB
+	)
+
+	// Try Gi first
+	if bytes >= GB && bytes%GB == 0 {
+		return fmt.Sprintf("%dGi", bytes/GB)
+	}
+	// Try Mi
+	if bytes >= MB && bytes%MB == 0 {
+		return fmt.Sprintf("%dMi", bytes/MB)
+	}
+	// Try Ki
+	if bytes >= KB && bytes%KB == 0 {
+		return fmt.Sprintf("%dKi", bytes/KB)
+	}
+	// Return raw bytes
+	return fmt.Sprintf("%d", bytes)
+}
+
+// parseBytes parses byte amounts with optional units
+// Supports: "10Mi", "1Gi", "1024Ki", "1024" (raw bytes)
+func parseBytes(value string) (int64, error) {
+	const (
+		_        = iota
+		KB int64 = 1 << (10 * iota)
+		MB
+		GB
+	)
+
+	// Check for unit suffixes
+	if strings.HasSuffix(value, "Gi") {
+		numStr := strings.TrimSuffix(value, "Gi")
+		num, err := strconv.ParseInt(numStr, 10, 64)
+		if err != nil {
+			return 0, fmt.Errorf("invalid Gi value: %w", err)
+		}
+		return num * GB, nil
+	}
+	if strings.HasSuffix(value, "Mi") {
+		numStr := strings.TrimSuffix(value, "Mi")
+		num, err := strconv.ParseInt(numStr, 10, 64)
+		if err != nil {
+			return 0, fmt.Errorf("invalid Mi value: %w", err)
+		}
+		return num * MB, nil
+	}
+	if strings.HasSuffix(value, "Ki") {
+		numStr := strings.TrimSuffix(value, "Ki")
+		num, err := strconv.ParseInt(numStr, 10, 64)
+		if err != nil {
+			return 0, fmt.Errorf("invalid Ki value: %w", err)
+		}
+		return num * KB, nil
+	}
+
+	// Parse as raw bytes
+	num, err := strconv.ParseInt(value, 10, 64)
+	if err != nil {
+		return 0, fmt.Errorf("invalid byte value: %w", err)
+	}
+	return num, nil
+}
+
 // parseError parses error injection specifications
 // Examples: "503", "0.1", "503:0.1"
 func parseError(value string) (*ErrorBehavior, error) {
@@ -497,7 +564,7 @@ func parseCPU(value string) (*CPUBehavior, error) {
 }
 
 // parseMemory parses memory behavior specifications
-// Examples: "leak-slow", "leak-slow:10m", "steady:128Mi"
+// Examples: "leak-slow", "leak-slow:10m", "10Mi", "1Gi"
 func parseMemory(value string) (*MemoryBehavior, error) {
 	parts := strings.Split(value, ":")
 	mb := &MemoryBehavior{
@@ -506,12 +573,28 @@ func parseMemory(value string) (*MemoryBehavior, error) {
 		Duration: 10 * time.Minute,
 	}
 
-	if len(parts) > 1 {
-		d, err := time.ParseDuration(parts[1])
-		if err != nil {
-			return nil, err
+	// Check if first part is a leak pattern
+	if strings.HasPrefix(parts[0], "leak") {
+		// It's a leak pattern like "leak-slow" or "leak-fast"
+		if len(parts) > 1 {
+			d, err := time.ParseDuration(parts[1])
+			if err != nil {
+				return nil, err
+			}
+			mb.Duration = d
 		}
-		mb.Duration = d
+	} else {
+		// Try to parse as byte amount (e.g., "10Mi", "1Gi", "1024")
+		amount, err := parseBytes(parts[0])
+		if err != nil {
+			// If it fails, treat it as a pattern name (for backward compatibility)
+			// This handles patterns like "steady" or other custom patterns
+			mb.Pattern = parts[0]
+		} else {
+			// Successfully parsed as bytes
+			mb.Amount = amount
+			mb.Pattern = "steady" // Default pattern for amount-based allocation
+		}
 	}
 
 	return mb, nil

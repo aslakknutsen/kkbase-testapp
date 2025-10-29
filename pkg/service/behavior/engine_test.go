@@ -495,7 +495,7 @@ func TestBehaviorString(t *testing.T) {
 		{
 			name:     "error with custom code",
 			input:    "error=503:0.5",
-			expected: "error=0.5,code=503",
+			expected: "error=503:0.5",
 		},
 		{
 			name:     "combined behaviors",
@@ -821,6 +821,288 @@ func TestCustomParameters(t *testing.T) {
 			for k, v := range b.CustomParams {
 				if b2.CustomParams[k] != v {
 					t.Errorf("round-trip custom param %s: got %s, want %s", k, b2.CustomParams[k], v)
+				}
+			}
+		})
+	}
+}
+
+// TestFullRoundTrip tests complete round-trip serialization/deserialization
+// for all behavior types including their specific fields
+func TestFullRoundTrip(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    string
+		validate func(t *testing.T, b1, b2 *Behavior)
+	}{
+		{
+			name:  "error with custom code",
+			input: "error=503:0.5",
+			validate: func(t *testing.T, b1, b2 *Behavior) {
+				if b1.Error == nil || b2.Error == nil {
+					t.Fatal("error behavior is nil")
+				}
+				if b1.Error.Rate != b2.Error.Rate {
+					t.Errorf("error rate: got %d, want %d", b2.Error.Rate, b1.Error.Rate)
+				}
+				if b1.Error.Prob != b2.Error.Prob {
+					t.Errorf("error prob: got %v, want %v", b2.Error.Prob, b1.Error.Prob)
+				}
+			},
+		},
+		{
+			name:  "error with default code",
+			input: "error=0.5",
+			validate: func(t *testing.T, b1, b2 *Behavior) {
+				if b1.Error == nil || b2.Error == nil {
+					t.Fatal("error behavior is nil")
+				}
+				if b1.Error.Rate != b2.Error.Rate {
+					t.Errorf("error rate: got %d, want %d", b2.Error.Rate, b1.Error.Rate)
+				}
+				if b1.Error.Prob != b2.Error.Prob {
+					t.Errorf("error prob: got %v, want %v", b2.Error.Prob, b1.Error.Prob)
+				}
+			},
+		},
+		{
+			name:  "memory with byte amount Mi",
+			input: "memory=10Mi",
+			validate: func(t *testing.T, b1, b2 *Behavior) {
+				if b1.Memory == nil || b2.Memory == nil {
+					t.Fatal("memory behavior is nil")
+				}
+				if b1.Memory.Amount != b2.Memory.Amount {
+					t.Errorf("memory amount: got %d, want %d", b2.Memory.Amount, b1.Memory.Amount)
+				}
+				if b1.Memory.Pattern != b2.Memory.Pattern {
+					t.Errorf("memory pattern: got %s, want %s", b2.Memory.Pattern, b1.Memory.Pattern)
+				}
+			},
+		},
+		{
+			name:  "memory with byte amount Gi",
+			input: "memory=1Gi",
+			validate: func(t *testing.T, b1, b2 *Behavior) {
+				if b1.Memory == nil || b2.Memory == nil {
+					t.Fatal("memory behavior is nil")
+				}
+				if b1.Memory.Amount != b2.Memory.Amount {
+					t.Errorf("memory amount: got %d, want %d", b2.Memory.Amount, b1.Memory.Amount)
+				}
+			},
+		},
+		{
+			name:  "memory leak pattern",
+			input: "memory=leak-slow:5m",
+			validate: func(t *testing.T, b1, b2 *Behavior) {
+				if b1.Memory == nil || b2.Memory == nil {
+					t.Fatal("memory behavior is nil")
+				}
+				if b1.Memory.Pattern != b2.Memory.Pattern {
+					t.Errorf("memory pattern: got %s, want %s", b2.Memory.Pattern, b1.Memory.Pattern)
+				}
+				if b1.Memory.Duration != b2.Memory.Duration {
+					t.Errorf("memory duration: got %s, want %s", b2.Memory.Duration, b1.Memory.Duration)
+				}
+			},
+		},
+		{
+			name:  "cpu with explicit intensity",
+			input: "cpu=spike:5s:80",
+			validate: func(t *testing.T, b1, b2 *Behavior) {
+				if b1.CPU == nil || b2.CPU == nil {
+					t.Fatal("cpu behavior is nil")
+				}
+				if b1.CPU.Pattern != b2.CPU.Pattern {
+					t.Errorf("cpu pattern: got %s, want %s", b2.CPU.Pattern, b1.CPU.Pattern)
+				}
+				if b1.CPU.Duration != b2.CPU.Duration {
+					t.Errorf("cpu duration: got %s, want %s", b2.CPU.Duration, b1.CPU.Duration)
+				}
+				if b1.CPU.Intensity != b2.CPU.Intensity {
+					t.Errorf("cpu intensity: got %d, want %d", b2.CPU.Intensity, b1.CPU.Intensity)
+				}
+			},
+		},
+		{
+			name:  "cpu with different intensity",
+			input: "cpu=steady:10s:50",
+			validate: func(t *testing.T, b1, b2 *Behavior) {
+				if b1.CPU == nil || b2.CPU == nil {
+					t.Fatal("cpu behavior is nil")
+				}
+				if b1.CPU.Intensity != b2.CPU.Intensity {
+					t.Errorf("cpu intensity: got %d, want %d", b2.CPU.Intensity, b1.CPU.Intensity)
+				}
+			},
+		},
+		{
+			name:  "latency fixed",
+			input: "latency=100ms",
+			validate: func(t *testing.T, b1, b2 *Behavior) {
+				if b1.Latency == nil || b2.Latency == nil {
+					t.Fatal("latency behavior is nil")
+				}
+				if b1.Latency.Type != b2.Latency.Type {
+					t.Errorf("latency type: got %s, want %s", b2.Latency.Type, b1.Latency.Type)
+				}
+				if b1.Latency.Value != b2.Latency.Value {
+					t.Errorf("latency value: got %s, want %s", b2.Latency.Value, b1.Latency.Value)
+				}
+			},
+		},
+		{
+			name:  "latency range",
+			input: "latency=50ms-200ms",
+			validate: func(t *testing.T, b1, b2 *Behavior) {
+				if b1.Latency == nil || b2.Latency == nil {
+					t.Fatal("latency behavior is nil")
+				}
+				if b1.Latency.Type != b2.Latency.Type {
+					t.Errorf("latency type: got %s, want %s", b2.Latency.Type, b1.Latency.Type)
+				}
+				if b1.Latency.Min != b2.Latency.Min {
+					t.Errorf("latency min: got %s, want %s", b2.Latency.Min, b1.Latency.Min)
+				}
+				if b1.Latency.Max != b2.Latency.Max {
+					t.Errorf("latency max: got %s, want %s", b2.Latency.Max, b1.Latency.Max)
+				}
+			},
+		},
+		{
+			name:  "combined behaviors",
+			input: "latency=100ms,error=503:0.5,cpu=spike:5s:80,memory=10Mi",
+			validate: func(t *testing.T, b1, b2 *Behavior) {
+				if b1.Latency == nil || b2.Latency == nil {
+					t.Fatal("latency behavior is nil")
+				}
+				if b1.Error == nil || b2.Error == nil {
+					t.Fatal("error behavior is nil")
+				}
+				if b1.CPU == nil || b2.CPU == nil {
+					t.Fatal("cpu behavior is nil")
+				}
+				if b1.Memory == nil || b2.Memory == nil {
+					t.Fatal("memory behavior is nil")
+				}
+
+				// Validate all fields
+				if b1.Error.Rate != b2.Error.Rate {
+					t.Errorf("error rate: got %d, want %d", b2.Error.Rate, b1.Error.Rate)
+				}
+				if b1.Memory.Amount != b2.Memory.Amount {
+					t.Errorf("memory amount: got %d, want %d", b2.Memory.Amount, b1.Memory.Amount)
+				}
+				if b1.CPU.Intensity != b2.CPU.Intensity {
+					t.Errorf("cpu intensity: got %d, want %d", b2.CPU.Intensity, b1.CPU.Intensity)
+				}
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Parse input
+			b1, err := Parse(tt.input)
+			if err != nil {
+				t.Fatalf("Parse() failed: %v", err)
+			}
+
+			// Serialize
+			serialized := b1.String()
+			t.Logf("Original: %s", tt.input)
+			t.Logf("Serialized: %s", serialized)
+
+			// Re-parse
+			b2, err := Parse(serialized)
+			if err != nil {
+				t.Fatalf("Round-trip Parse() failed on %q: %v", serialized, err)
+			}
+
+			// Validate specific fields
+			tt.validate(t, b1, b2)
+		})
+	}
+}
+
+// TestBehaviorChainRoundTrip tests complete round-trip for behavior chains
+func TestBehaviorChainRoundTrip(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+	}{
+		{
+			name:  "single service with error",
+			input: "order-api:error=503:0.5",
+		},
+		{
+			name:  "multiple services",
+			input: "order-api:error=503:0.5,product-api:latency=100ms",
+		},
+		{
+			name:  "global and specific",
+			input: "latency=50ms,order-api:error=0.5",
+		},
+		{
+			name:  "complex behaviors",
+			input: "order-api:latency=100ms,error=503:0.3,cpu=spike:5s:80,product-api:memory=10Mi",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Parse chain
+			bc1, err := ParseChain(tt.input)
+			if err != nil {
+				t.Fatalf("ParseChain() failed: %v", err)
+			}
+
+			// Serialize
+			serialized := bc1.String()
+			t.Logf("Original: %s", tt.input)
+			t.Logf("Serialized: %s", serialized)
+
+			// Re-parse
+			bc2, err := ParseChain(serialized)
+			if err != nil {
+				t.Fatalf("Round-trip ParseChain() failed on %q: %v", serialized, err)
+			}
+
+			// Compare behavior counts
+			if len(bc1.Behaviors) != len(bc2.Behaviors) {
+				t.Fatalf("behavior count mismatch: got %d, want %d", len(bc2.Behaviors), len(bc1.Behaviors))
+			}
+
+			// Compare each service behavior
+			for i := range bc1.Behaviors {
+				sb1 := bc1.Behaviors[i]
+				sb2 := bc2.Behaviors[i]
+
+				if sb1.Service != sb2.Service {
+					t.Errorf("behavior[%d] service: got %q, want %q", i, sb2.Service, sb1.Service)
+				}
+
+				// Validate behavior fields
+				if sb1.Behavior.Latency != nil && sb2.Behavior.Latency != nil {
+					if sb1.Behavior.Latency.Type != sb2.Behavior.Latency.Type {
+						t.Errorf("behavior[%d] latency type mismatch", i)
+					}
+				}
+				if sb1.Behavior.Error != nil && sb2.Behavior.Error != nil {
+					if sb1.Behavior.Error.Rate != sb2.Behavior.Error.Rate {
+						t.Errorf("behavior[%d] error rate: got %d, want %d", i, sb2.Behavior.Error.Rate, sb1.Behavior.Error.Rate)
+					}
+				}
+				if sb1.Behavior.CPU != nil && sb2.Behavior.CPU != nil {
+					if sb1.Behavior.CPU.Intensity != sb2.Behavior.CPU.Intensity {
+						t.Errorf("behavior[%d] cpu intensity: got %d, want %d", i, sb2.Behavior.CPU.Intensity, sb1.Behavior.CPU.Intensity)
+					}
+				}
+				if sb1.Behavior.Memory != nil && sb2.Behavior.Memory != nil {
+					if sb1.Behavior.Memory.Amount != sb2.Behavior.Memory.Amount {
+						t.Errorf("behavior[%d] memory amount: got %d, want %d", i, sb2.Behavior.Memory.Amount, sb1.Behavior.Memory.Amount)
+					}
 				}
 			}
 		})
