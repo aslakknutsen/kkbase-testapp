@@ -35,7 +35,7 @@ func NewServer(cfg *service.Config, tel *telemetry.Telemetry) *Server {
 	return &Server{
 		config:    cfg,
 		telemetry: tel,
-		caller:    client.NewCaller(),
+		caller:    client.NewCaller(tel),
 	}
 }
 

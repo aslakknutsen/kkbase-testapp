@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/kagenti/kkbase/testapp/pkg/service"
+	"github.com/kagenti/kkbase/testapp/pkg/service/telemetry"
 	pb "github.com/kagenti/kkbase/testapp/proto/testservice"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/codes"
@@ -37,16 +38,16 @@ type Result struct {
 // Caller handles upstream calls to both HTTP and gRPC services
 type Caller struct {
 	httpClient *http.Client
-	tracer     trace.Tracer
+	telemetry  *telemetry.Telemetry
 }
 
 // NewCaller creates a new upstream caller
-func NewCaller() *Caller {
+func NewCaller(tel *telemetry.Telemetry) *Caller {
 	return &Caller{
 		httpClient: &http.Client{
 			Timeout: 30 * time.Second,
 		},
-		tracer: otel.Tracer("testservice.client"),
+		telemetry: tel,
 	}
 }
 
@@ -56,12 +57,9 @@ func (c *Caller) Call(ctx context.Context, name string, upstream *service.Upstre
 	start := time.Now()
 
 	// Start span for upstream call
-	ctx, span := c.tracer.Start(ctx, fmt.Sprintf("upstream.%s", name),
-		trace.WithSpanKind(trace.SpanKindClient),
-		trace.WithAttributes(
-			semconv.NetworkProtocolName(upstream.Protocol),
-			semconv.NetworkTransportTCP,
-		),
+	ctx, span := c.telemetry.StartClientSpan(ctx, fmt.Sprintf("upstream.%s", name),
+		semconv.NetworkProtocolName(upstream.Protocol),
+		semconv.NetworkTransportTCP,
 	)
 	defer span.End()
 
