@@ -1,10 +1,15 @@
 # Build stage
-FROM golang:1.24-alpine AS builder
+FROM registry.access.redhat.com/ubi9/go-toolset:1.24 AS builder
+
+USER 0
 
 WORKDIR /build
 
-# Install protoc and dependencies
-RUN apk add --no-cache git protobuf-dev make
+# Install build dependencies
+RUN dnf install -y --setopt=tsflags=nodocs \
+    git \
+    make && \
+    dnf clean all
 
 # Copy go mod files
 COPY go.mod go.sum ./
@@ -17,9 +22,11 @@ COPY . .
 RUN CGO_ENABLED=0 GOOS=linux go build -a -installsuffix cgo -o testservice ./cmd/testservice
 
 # Runtime stage
-FROM alpine:latest
+FROM registry.access.redhat.com/ubi9/ubi-minimal:latest
 
-RUN apk --no-cache add ca-certificates
+# Install CA certificates
+RUN microdnf install -y ca-certificates && \
+    microdnf clean all
 
 WORKDIR /app
 
