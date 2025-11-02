@@ -139,24 +139,28 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Match upstreams based on request path
-	matchedUpstreams := s.matchUpstreamsForPath(r.URL.Path)
+	// Check if upstreams are configured
+	// If no upstreams at all, this is a leaf service - skip upstream calls
+	if len(s.config.Upstreams) > 0 {
+		// Match upstreams based on request path
+		matchedUpstreams := s.matchUpstreamsForPath(r.URL.Path)
 
-	// If no upstreams match, return 404
-	if len(matchedUpstreams) == 0 {
-		now := time.Now()
-		resp.Code = 404
-		resp.Body = fmt.Sprintf("No upstream matches path: %s", r.URL.Path)
-		resp.EndTime = now.Format(time.RFC3339Nano)
-		resp.Duration = now.Sub(start).String()
+		// If upstreams are configured but none match, return 404
+		if len(matchedUpstreams) == 0 {
+			now := time.Now()
+			resp.Code = 404
+			resp.Body = fmt.Sprintf("No upstream matches path: %s", r.URL.Path)
+			resp.EndTime = now.Format(time.RFC3339Nano)
+			resp.Duration = now.Sub(start).String()
 
-		s.telemetry.RecordBehavior("path_not_found")
-		s.sendResponse(w, resp, 404, span, start)
-		return
+			s.telemetry.RecordBehavior("path_not_found")
+			s.sendResponse(w, resp, 404, span, start)
+			return
+		}
+
+		// Call matched upstreams
+		resp.UpstreamCalls = s.callMatchedUpstreams(ctx, matchedUpstreams, r.URL.Path, behaviorStr)
 	}
-
-	// Call matched upstreams
-	resp.UpstreamCalls = s.callMatchedUpstreams(ctx, matchedUpstreams, r.URL.Path, behaviorStr)
 
 	// Set success response
 	now := time.Now()
