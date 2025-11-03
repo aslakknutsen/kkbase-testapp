@@ -310,9 +310,39 @@ services:
       component: notification-service
 
 traffic:
-  - name: api-traffic
+  # Simulate realistic user traffic with daily patterns across multiple endpoints
+  - name: web-traffic
     target: api-gateway
     rate: "200/s"
     pattern: diurnal
     duration: 24h
+    paths:
+      - /api/v1/products
+      - /api/v1/catalog
+      - /api/v1/search
+      - /api/v1/cart
+      - /api/v1/checkout
+    pathPattern: round-robin
+
+  # Simulate batch processing or API integrations with spiky traffic
+  - name: batch-traffic
+    target: api-gateway
+    rate: "100/s"
+    pattern: spiky
+    duration: 2h
+    paths:
+      - /api/v1/orders
+      - /api/v1/reviews
+    pathPattern: random
+
+  # Constant background load for monitoring
+  - name: healthcheck-traffic
+    target: api-gateway
+    rate: "10/s"
+    pattern: steady
+    duration: 5m
+    paths:
+      - /api/v1/catalog
+      - /api/v1/search
+    pathPattern: round-robin
 

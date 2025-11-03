@@ -80,12 +80,14 @@ type ResourceValues struct {
 
 // TrafficConfig defines traffic generation
 type TrafficConfig struct {
-	Name     string `yaml:"name"`
-	Type     string `yaml:"type,omitempty"` // load-generator
-	Target   string `yaml:"target"`
-	Rate     string `yaml:"rate,omitempty"`
-	Pattern  string `yaml:"pattern,omitempty"` // steady, spiky, diurnal
-	Duration string `yaml:"duration,omitempty"`
+	Name        string   `yaml:"name"`
+	Type        string   `yaml:"type,omitempty"` // load-generator
+	Target      string   `yaml:"target"`
+	Rate        string   `yaml:"rate,omitempty"`
+	Pattern     string   `yaml:"pattern,omitempty"` // steady, spiky, diurnal
+	Duration    string   `yaml:"duration,omitempty"`
+	Paths       []string `yaml:"paths,omitempty"`       // List of paths to call
+	PathPattern string   `yaml:"pathPattern,omitempty"` // round-robin, random, sequential
 }
 
 // ScenarioConfig defines time-based scenarios

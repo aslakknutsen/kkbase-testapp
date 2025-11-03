@@ -1,0 +1,73 @@
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ .Name }}-script
+  namespace: {{ .Namespace }}
+  labels:
+    app: {{ .Name }}
+    component: traffic-generator
+data:
+  run.sh: |
+{{ .WrapperScript | indent 4 }}
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ .Name }}
+  namespace: {{ .Namespace }}
+  labels:
+    app: {{ .Name }}
+    component: traffic-generator
+    pattern: {{ .Pattern }}
+spec:
+  ttlSecondsAfterFinished: 300
+  backoffLimit: 2
+  template:
+    metadata:
+      labels:
+        app: {{ .Name }}
+        component: traffic-generator
+        pattern: {{ .Pattern }}
+    spec:
+      restartPolicy: Never
+      containers:
+      - name: load-generator
+        image: alpine:latest
+        command: ["/bin/sh", "-c"]
+        args:
+          - |
+            # Install fortio
+            cd /tmp
+            wget -q https://github.com/fortio/fortio/releases/download/v1.73.0/fortio-linux_amd64-1.73.0.tgz
+            tar -xzf fortio-linux_amd64-1.73.0.tgz
+            mv usr/bin/fortio /usr/local/bin/fortio
+            chmod +x /usr/local/bin/fortio
+            # Run the traffic script
+            /bin/sh /scripts/run.sh
+        env:
+        - name: TARGET_URL
+          value: "{{ .TargetURL }}"
+        - name: RATE
+          value: "{{ .Rate }}"
+        - name: PATTERN
+          value: "{{ .Pattern }}"
+        - name: DURATION
+          value: "{{ .Duration }}"
+        resources:
+          requests:
+            cpu: 100m
+            memory: 128Mi
+          limits:
+            cpu: 500m
+            memory: 256Mi
+        volumeMounts:
+        - name: scripts
+          mountPath: /scripts
+          readOnly: true
+      volumes:
+      - name: scripts
+        configMap:
+          name: {{ .Name }}-script
+          defaultMode: 0755
+

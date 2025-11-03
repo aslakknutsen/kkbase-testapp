@@ -295,20 +295,103 @@ services:
 | `rate` | string | Request rate (e.g., "100/s") |
 | `pattern` | string | Traffic pattern: `steady`, `spiky`, `diurnal` |
 | `duration` | string | Duration (0 = continuous) |
+| `paths` | []string | List of URL paths to call (optional) |
+| `pathPattern` | string | How to distribute across paths: `round-robin` (default), `random`, `sequential` |
 
-### Example
+### Examples
 
+**Single Path:**
 ```yaml
 traffic:
   - name: load-gen
-    type: load-generator
     target: frontend
     rate: "100/s"
     pattern: steady
     duration: "1h"
 ```
 
-**Note:** Traffic generation is not yet implemented in TestService, but DSL support exists.
+**Multiple Paths with Round-Robin:**
+```yaml
+traffic:
+  - name: api-load
+    target: api-gateway
+    rate: "200/s"
+    pattern: steady
+    duration: "2h"
+    paths:
+      - /api/v1/products
+      - /api/v1/cart
+      - /api/v1/checkout
+    pathPattern: round-robin
+```
+
+**Random Path Selection:**
+```yaml
+traffic:
+  - name: random-load
+    target: api-gateway
+    rate: "100/s"
+    pattern: spiky
+    duration: "1h"
+    paths:
+      - /api/v1/search
+      - /api/v1/reviews
+    pathPattern: random
+```
+
+### Implementation Details
+
+Traffic generation is implemented using [Fortio](https://github.com/fortio/fortio), a load testing tool designed for service mesh testing.
+
+**Generated Resources:**
+- Kubernetes Job that runs Alpine Linux with Fortio binary
+- ConfigMap containing pattern-specific wrapper scripts
+- Jobs are created in the target service's namespace
+- Fortio binary is downloaded at Job startup for maximum compatibility
+
+**Pattern Behaviors:**
+
+| Pattern | Behavior | Use Case |
+|---------|----------|----------|
+| `steady` | Constant rate throughout duration | Baseline performance testing |
+| `spiky` | Alternates between 3x bursts (5s) and 0.2x baseline (25s) | Testing autoscaling and resilience |
+| `diurnal` | 24-hour sine wave: peak during business hours (9am-5pm), low at night | Production-like traffic simulation |
+
+**Target Resolution:**
+- Automatically constructs service URLs: `{protocol}://{service}.{namespace}.svc.cluster.local:{port}`
+- Protocol (HTTP/gRPC) and port determined from target service configuration
+- Jobs run within the cluster for accurate service mesh testing
+
+**Path Distribution:**
+- **round-robin** (default): Distributes rate evenly across all paths in parallel
+- **random**: Randomly selects a path for each request interval
+- **sequential**: Cycles through paths in order, one at a time
+- If no `paths` specified, calls the root URL
+
+**Example Generated Job:**
+```yaml
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: api-traffic
+  namespace: sf-gateway
+spec:
+  ttlSecondsAfterFinished: 300
+  template:
+    spec:
+      containers:
+      - name: load-generator
+        image: alpine:latest
+        command: ["/bin/sh", "-c"]
+        args:
+          - |
+            cd /tmp
+            wget -q https://github.com/fortio/fortio/releases/download/v1.73.0/fortio-linux_amd64-1.73.0.tgz
+            tar -xzf fortio-linux_amd64-1.73.0.tgz
+            mv usr/bin/fortio /usr/local/bin/fortio
+            chmod +x /usr/local/bin/fortio
+            /bin/sh /scripts/run.sh
+```
 
 ## Validation Rules
 
