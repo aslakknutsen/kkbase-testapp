@@ -216,9 +216,9 @@ services:
     namespace: sf-orders
     replicas: 2
     protocols: [http]
-    upstreams:
-      - name: message-bus
-        paths: [/events/OrderShipped, /events/OrderDelivered]
+#    upstreams:
+#      - name: message-bus
+#        paths: [/events/OrderShipped, /events/OrderDelivered]
     behavior:
       latency: "30-120ms"
       errorRate: 0.015
