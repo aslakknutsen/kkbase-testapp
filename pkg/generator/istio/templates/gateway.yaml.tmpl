@@ -1,0 +1,27 @@
+apiVersion: networking.istio.io/v1beta1
+kind: Gateway
+metadata:
+  name: {{ .Name }}
+  namespace: {{ .Namespace }}
+  labels:
+    app: {{ .AppName }}
+spec:
+  selector:
+    istio: ingressgateway
+  servers:
+  {{- range .Servers }}
+  - port:
+      number: {{ .Port }}
+      name: {{ toLower .Protocol }}
+      protocol: {{ .Protocol }}
+    hosts:
+    {{- range .Hosts }}
+    - {{ . }}
+    {{- end }}
+    {{- if .TLS }}
+    tls:
+      mode: {{ .TLS.Mode }}
+      credentialName: {{ .TLS.CredentialName }}
+    {{- end }}
+  {{- end }}
+

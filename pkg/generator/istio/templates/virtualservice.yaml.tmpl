@@ -1,0 +1,67 @@
+apiVersion: networking.istio.io/v1beta1
+kind: VirtualService
+metadata:
+  name: {{ .Name }}
+  namespace: {{ .Namespace }}
+  labels:
+    app: {{ .AppName }}
+    service: {{ .Name }}
+spec:
+  hosts:
+  {{- range .Hosts }}
+  - {{ . }}
+  {{- end }}
+  {{- if .HTTPRoutes }}
+  http:
+  {{- range .HTTPRoutes }}
+  - name: {{ .Name }}
+    {{- if .Match }}
+    match:
+    {{- range .Match }}
+    - uri:
+        prefix: {{ .URIPrefix }}
+    {{- end }}
+    {{- end }}
+    route:
+    - destination:
+        host: {{ .Destination.Host }}.{{ .Destination.Namespace }}.svc.cluster.local
+        port:
+          number: {{ .Destination.Port }}
+    {{- if .Rewrite }}
+    rewrite:
+      uri: {{ .Rewrite.URI }}
+    {{- end }}
+  {{- end }}
+  {{- if $.Timeout }}
+    timeout: {{ $.Timeout }}
+  {{- end }}
+  {{- if $.Retries }}
+    retries:
+      attempts: {{ $.Retries.Attempts }}
+      {{- if $.Retries.PerTryTimeout }}
+      perTryTimeout: {{ $.Retries.PerTryTimeout }}
+      {{- end }}
+      retryOn: {{ $.Retries.RetryOn }}
+  {{- end }}
+  {{- else if .HasTrafficSplit }}
+  http:
+  - route:
+    {{- range .TrafficSplit }}
+    - destination:
+        host: {{ $.Name }}.{{ $.Namespace }}.svc.cluster.local
+        subset: {{ .Subset }}
+      weight: {{ .Weight }}
+    {{- end }}
+  {{- if .Timeout }}
+    timeout: {{ .Timeout }}
+  {{- end }}
+  {{- if .Retries }}
+    retries:
+      attempts: {{ .Retries.Attempts }}
+      {{- if .Retries.PerTryTimeout }}
+      perTryTimeout: {{ .Retries.PerTryTimeout }}
+      {{- end }}
+      retryOn: {{ .Retries.RetryOn }}
+  {{- end }}
+  {{- end }}
+

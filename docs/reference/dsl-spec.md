@@ -6,14 +6,16 @@ Complete reference for the TestApp YAML DSL.
 
 ```yaml
 app:
-  name: string           # Application name (required)
-  namespaces: []string   # Kubernetes namespaces to create
+  name: string             # Application name (required)
+  namespaces: []string     # Kubernetes namespaces to create
+  providers: Provider      # Ingress and mesh providers (optional)
+  meshDefaults: MeshConfig # Default mesh configuration (optional)
 
-services: []Service      # List of services (required)
+services: []Service        # List of services (required)
 
-traffic: []TrafficGen    # Traffic generators (optional)
+traffic: []TrafficGen      # Traffic generators (optional)
 
-scenarios: []Scenario    # Time-based scenarios (optional, future)
+scenarios: []Scenario      # Time-based scenarios (optional, future)
 ```
 
 ## App Section
@@ -24,6 +26,8 @@ scenarios: []Scenario    # Time-based scenarios (optional, future)
 |-------|------|----------|-------------|
 | `name` | string | Yes | Application name, used for labels |
 | `namespaces` | []string | No | Kubernetes namespaces to create |
+| `providers` | ProviderConfig | No | Ingress and mesh provider configuration |
+| `meshDefaults` | MeshConfig | No | Default mesh settings for all services |
 
 ### Example
 
@@ -34,6 +38,109 @@ app:
     - default
     - backend
     - database
+  providers:
+    ingress: gateway-api
+    mesh: istio
+  meshDefaults:
+    timeout: 5s
+    retries:
+      attempts: 3
+      perTryTimeout: 1s
+    circuitBreaker:
+      consecutiveErrors: 5
+    loadBalancing: ROUND_ROBIN
+```
+
+## Provider Configuration
+
+Defines which providers to use for ingress and service mesh functionality.
+
+### Fields
+
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| `ingress` | string | No | "gateway-api" | Ingress provider: `gateway-api`, `istio-gateway`, `k8s-ingress`, `openshift-routes`, `none` |
+| `mesh` | string | No | "" | Mesh provider: `istio`, `linkerd`, `gateway-api-mesh`, `none` |
+
+### Example
+
+```yaml
+providers:
+  ingress: gateway-api  # Use Gateway API for ingress
+  mesh: istio          # Use Istio for service mesh
+```
+
+**Provider Options:**
+
+**Ingress Providers:**
+- `gateway-api` - Kubernetes Gateway API (default)
+- `istio-gateway` - Istio Gateway + VirtualService
+- `k8s-ingress` - Traditional Kubernetes Ingress
+- `openshift-routes` - OpenShift Routes
+- `none` - No ingress resources generated
+
+**Mesh Providers:**
+- `istio` - Istio service mesh (VirtualService, DestinationRule)
+- `linkerd` - Linkerd service mesh (future)
+- `gateway-api-mesh` - Gateway API for mesh routing (future)
+- `none` or empty - No mesh resources generated
+
+## Mesh Configuration
+
+Default mesh configuration applied to all services unless overridden at service level.
+
+### Fields
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `timeout` | string | No | Request timeout (e.g., "5s") |
+| `retries` | RetryConfig | No | Retry policy configuration |
+| `circuitBreaker` | CircuitBreakerConfig | No | Circuit breaker settings |
+| `loadBalancing` | string | No | Load balancing algorithm |
+| `trafficSplit` | []TrafficSplit | No | Traffic splitting for canary deployments |
+| `mtls` | string | No | mTLS mode (provider-specific) |
+
+### Retry Configuration
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `attempts` | int | Number of retry attempts |
+| `perTryTimeout` | string | Timeout per retry attempt |
+| `retryOn` | string | Conditions to retry on (default: "5xx,reset,connect-failure,refused-stream") |
+
+### Circuit Breaker Configuration
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `consecutiveErrors` | int | Number of consecutive errors before circuit opens |
+| `interval` | string | Interval for checking errors (e.g., "30s") |
+| `baseEjectionTime` | string | Minimum ejection duration (e.g., "30s") |
+| `maxEjectionPercent` | int | Maximum percentage of hosts that can be ejected |
+
+### Traffic Split Configuration
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `version` | string | Yes | Version identifier |
+| `weight` | int | Yes | Traffic weight percentage (0-100) |
+| `subset` | string | No | Subset name for routing |
+
+### Example
+
+```yaml
+meshDefaults:
+  timeout: 5s
+  retries:
+    attempts: 3
+    perTryTimeout: 1s
+    retryOn: "5xx,reset,connect-failure"
+  circuitBreaker:
+    consecutiveErrors: 5
+    interval: 30s
+    baseEjectionTime: 30s
+    maxEjectionPercent: 50
+  loadBalancing: ROUND_ROBIN  # ROUND_ROBIN, LEAST_REQUEST, RANDOM, PASSTHROUGH
+  mtls: STRICT                # STRICT, PERMISSIVE, DISABLE
 ```
 
 ## Service Definition
@@ -47,6 +154,7 @@ app:
 | `type` | string | No | "Deployment" | Workload type: `Deployment`, `StatefulSet`, `DaemonSet` |
 | `replicas` | int | No | 1 | Number of replicas (ignored for DaemonSet) |
 | `protocols` | []string | No | ["http"] | Protocols: `http`, `grpc` |
+| `mesh` | MeshConfig | No | - | Service-level mesh configuration (overrides app defaults) |
 
 ### Example
 
@@ -57,6 +165,10 @@ services:
     type: Deployment
     replicas: 2
     protocols: [http]
+    mesh:
+      timeout: 10s  # Override app default
+      retries:
+        attempts: 5
 ```
 
 ## Ports Configuration
@@ -238,6 +350,55 @@ services:
       pii: "true"
 ```
 
+## Service-Level Mesh Configuration
+
+Services can override app-level mesh defaults or disable mesh entirely.
+
+### Override Defaults
+
+```yaml
+services:
+  - name: api-gateway
+    mesh:
+      timeout: 10s          # Override default
+      retries:
+        attempts: 5         # Override default
+        perTryTimeout: 2s
+      circuitBreaker:
+        consecutiveErrors: 10  # More lenient than default
+```
+
+### Disable Mesh
+
+```yaml
+services:
+  - name: legacy-service
+    mesh:
+      enabled: false  # Explicitly opt out of mesh
+```
+
+### Traffic Splitting (Canary Deployments)
+
+```yaml
+services:
+  - name: frontend
+    mesh:
+      trafficSplit:
+        - version: v1
+          weight: 90
+          subset: v1
+        - version: v2
+          weight: 10
+          subset: v2
+```
+
+**Mesh Behavior:**
+- If `app.providers.mesh` is set (e.g., "istio"), mesh is **auto-enabled** for all services
+- Services inherit `app.meshDefaults` configuration
+- Service-level `mesh` config overrides specific fields from defaults
+- Set `mesh.enabled: false` to explicitly opt out a service
+- If no mesh provider is configured, mesh settings are ignored
+
 ## Complete Service Example
 
 ```yaml
@@ -263,6 +424,14 @@ services:
     behavior:
       latency: "10-50ms"
       errorRate: 0.01
+    
+    mesh:
+      timeout: 10s
+      retries:
+        attempts: 5
+        perTryTimeout: 2s
+      circuitBreaker:
+        consecutiveErrors: 10
     
     resources:
       requests:

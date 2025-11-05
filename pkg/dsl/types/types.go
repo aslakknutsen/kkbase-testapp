@@ -10,8 +10,16 @@ type AppSpec struct {
 
 // AppConfig defines application-level configuration
 type AppConfig struct {
-	Name       string   `yaml:"name"`
-	Namespaces []string `yaml:"namespaces,omitempty"`
+	Name         string         `yaml:"name"`
+	Namespaces   []string       `yaml:"namespaces,omitempty"`
+	Providers    ProviderConfig `yaml:"providers,omitempty"`
+	MeshDefaults MeshConfig     `yaml:"meshDefaults,omitempty"`
+}
+
+// ProviderConfig defines which providers to use for ingress and mesh
+type ProviderConfig struct {
+	Ingress string `yaml:"ingress,omitempty"` // gateway-api, istio-gateway, k8s-ingress, openshift-routes, none
+	Mesh    string `yaml:"mesh,omitempty"`    // istio, linkerd, gateway-api-mesh, none
 }
 
 // UpstreamRoute defines an upstream service with optional path-based routing
@@ -32,6 +40,7 @@ type ServiceConfig struct {
 	Behavior    BehaviorConfig    `yaml:"behavior,omitempty"`
 	Storage     StorageConfig     `yaml:"storage,omitempty"`
 	Ingress     IngressConfig     `yaml:"ingress,omitempty"`
+	Mesh        MeshConfig        `yaml:"mesh,omitempty"`
 	Resources   ResourceConfig    `yaml:"resources,omitempty"`
 	Labels      map[string]string `yaml:"labels,omitempty"`
 	Annotations map[string]string `yaml:"annotations,omitempty"`
@@ -64,6 +73,39 @@ type IngressConfig struct {
 	Host    string   `yaml:"host,omitempty"`
 	TLS     bool     `yaml:"tls,omitempty"`
 	Paths   []string `yaml:"paths,omitempty"`
+}
+
+// MeshConfig defines service mesh configuration
+type MeshConfig struct {
+	Enabled        *bool                 `yaml:"enabled,omitempty"` // pointer so we can distinguish unset from false
+	Timeout        string                `yaml:"timeout,omitempty"` // e.g., "5s"
+	Retries        *RetryConfig          `yaml:"retries,omitempty"`
+	CircuitBreaker *CircuitBreakerConfig `yaml:"circuitBreaker,omitempty"`
+	LoadBalancing  string                `yaml:"loadBalancing,omitempty"` // ROUND_ROBIN, LEAST_REQUEST, RANDOM, PASSTHROUGH
+	TrafficSplit   []TrafficSplitConfig  `yaml:"trafficSplit,omitempty"`
+	MTLS           string                `yaml:"mtls,omitempty"` // STRICT, PERMISSIVE, DISABLE
+}
+
+// RetryConfig defines retry policy
+type RetryConfig struct {
+	Attempts      int    `yaml:"attempts,omitempty"`
+	PerTryTimeout string `yaml:"perTryTimeout,omitempty"`
+	RetryOn       string `yaml:"retryOn,omitempty"` // e.g., "5xx,timeout,reset"
+}
+
+// CircuitBreakerConfig defines circuit breaker settings
+type CircuitBreakerConfig struct {
+	ConsecutiveErrors  int    `yaml:"consecutiveErrors,omitempty"`
+	Interval           string `yaml:"interval,omitempty"`
+	BaseEjectionTime   string `yaml:"baseEjectionTime,omitempty"`
+	MaxEjectionPercent int    `yaml:"maxEjectionPercent,omitempty"`
+}
+
+// TrafficSplitConfig defines traffic splitting for canary/A-B testing
+type TrafficSplitConfig struct {
+	Version string `yaml:"version"`
+	Weight  int    `yaml:"weight"`
+	Subset  string `yaml:"subset,omitempty"`
 }
 
 // ResourceConfig defines resource requests and limits
@@ -151,6 +193,56 @@ func (s *ServiceConfig) IsStateful() bool {
 	return s.Type == "StatefulSet"
 }
 
+// MeshEnabled returns true if mesh is enabled for this service
+func (s *ServiceConfig) MeshEnabled(appMeshProvider string) bool {
+	// Explicit disable
+	if s.Mesh.Enabled != nil && !*s.Mesh.Enabled {
+		return false
+	}
+	// If app has mesh provider (not "none" or empty), default to enabled
+	return appMeshProvider != "" && appMeshProvider != "none"
+}
+
+// EffectiveMeshConfig returns the effective mesh configuration for this service
+// by merging app defaults with service-specific overrides
+func (s *ServiceConfig) EffectiveMeshConfig(appDefaults MeshConfig) MeshConfig {
+	// Start with app defaults
+	config := MeshConfig{
+		Enabled:        appDefaults.Enabled,
+		Timeout:        appDefaults.Timeout,
+		Retries:        appDefaults.Retries,
+		CircuitBreaker: appDefaults.CircuitBreaker,
+		LoadBalancing:  appDefaults.LoadBalancing,
+		TrafficSplit:   appDefaults.TrafficSplit,
+		MTLS:           appDefaults.MTLS,
+	}
+
+	// Override with service-specific settings (if provided)
+	if s.Mesh.Enabled != nil {
+		config.Enabled = s.Mesh.Enabled
+	}
+	if s.Mesh.Timeout != "" {
+		config.Timeout = s.Mesh.Timeout
+	}
+	if s.Mesh.Retries != nil {
+		config.Retries = s.Mesh.Retries
+	}
+	if s.Mesh.CircuitBreaker != nil {
+		config.CircuitBreaker = s.Mesh.CircuitBreaker
+	}
+	if s.Mesh.LoadBalancing != "" {
+		config.LoadBalancing = s.Mesh.LoadBalancing
+	}
+	if len(s.Mesh.TrafficSplit) > 0 {
+		config.TrafficSplit = s.Mesh.TrafficSplit
+	}
+	if s.Mesh.MTLS != "" {
+		config.MTLS = s.Mesh.MTLS
+	}
+
+	return config
+}
+
 func contains(slice []string, item string) bool {
 	for _, s := range slice {
 		if s == item {
@@ -174,6 +266,7 @@ func (s *ServiceConfig) UnmarshalYAML(unmarshal func(interface{}) error) error {
 		Behavior    BehaviorConfig    `yaml:"behavior,omitempty"`
 		Storage     StorageConfig     `yaml:"storage,omitempty"`
 		Ingress     IngressConfig     `yaml:"ingress,omitempty"`
+		Mesh        MeshConfig        `yaml:"mesh,omitempty"`
 		Resources   ResourceConfig    `yaml:"resources,omitempty"`
 		Labels      map[string]string `yaml:"labels,omitempty"`
 		Annotations map[string]string `yaml:"annotations,omitempty"`
@@ -193,6 +286,7 @@ func (s *ServiceConfig) UnmarshalYAML(unmarshal func(interface{}) error) error {
 	s.Behavior = aux.Behavior
 	s.Storage = aux.Storage
 	s.Ingress = aux.Ingress
+	s.Mesh = aux.Mesh
 	s.Resources = aux.Resources
 	s.Labels = aux.Labels
 	s.Annotations = aux.Annotations

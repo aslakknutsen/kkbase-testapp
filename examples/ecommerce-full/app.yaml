@@ -8,6 +8,23 @@ app:
     - sf-orders
     - sf-payments
     - sf-infra
+  
+  # Provider configuration - defines which ingress and mesh providers to use
+  providers:
+    ingress: gateway-api  # Options: gateway-api, istio-gateway, k8s-ingress, openshift-routes, none
+    mesh: istio          # Options: istio, linkerd, gateway-api-mesh, none
+  
+  # Default mesh configuration applied to all services (unless overridden at service level)
+  meshDefaults:
+    timeout: 5s
+    retries:
+      attempts: 3
+      perTryTimeout: 1s
+    circuitBreaker:
+      consecutiveErrors: 5
+      interval: 30s
+      baseEjectionTime: 30s
+    loadBalancing: ROUND_ROBIN  # Options: ROUND_ROBIN, LEAST_REQUEST, RANDOM, PASSTHROUGH
 
 services:
   # ============================================================================
@@ -38,6 +55,12 @@ services:
       tls: true
       paths:
         - /api/v1
+    # Override mesh defaults for this critical gateway service
+    mesh:
+      timeout: 10s  # Longer timeout than default
+      retries:
+        attempts: 5  # More retries for gateway
+        perTryTimeout: 2s
     behavior:
       latency: "5-15ms"
     resources:
@@ -296,6 +319,9 @@ services:
     replicas: 2
     protocols: [http]
     upstreams: []
+    # Example: Explicitly disable mesh for legacy service if needed
+    # mesh:
+    #   enabled: false
     behavior:
       latency: "80-250ms"
       errorRate: 0.02
