@@ -117,6 +117,15 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			s.telemetry.Logger.Warn("Failed to apply behavior", zap.Error(err))
 		}
 
+		// Check for panic injection (do this BEFORE error check)
+		if beh.ShouldPanic() {
+			s.telemetry.Logger.Fatal("Panic behavior triggered - crashing pod",
+				zap.String("service", s.config.Name),
+				zap.Float64("panic_prob", beh.Panic.Prob),
+			)
+			panic(fmt.Sprintf("Panic behavior triggered in service %s", s.config.Name))
+		}
+
 		// Check for error injection
 		if shouldErr, errCode := beh.ShouldError(); shouldErr {
 			now := time.Now()

@@ -17,6 +17,7 @@ type Behavior struct {
 	Error        *ErrorBehavior
 	CPU          *CPUBehavior
 	Memory       *MemoryBehavior
+	Panic        *PanicBehavior
 	CustomParams map[string]string
 }
 
@@ -105,6 +106,10 @@ func (b *Behavior) String() string {
 		}
 	}
 
+	if b.Panic != nil && b.Panic.Prob > 0 {
+		parts = append(parts, fmt.Sprintf("panic=%v", b.Panic.Prob))
+	}
+
 	if b.CPU != nil {
 		cpuStr := fmt.Sprintf("cpu=%s", b.CPU.Pattern)
 		if b.CPU.Duration > 0 {
@@ -166,6 +171,12 @@ func mergeBehaviors(b1, b2 *Behavior) *Behavior {
 		merged.Memory = b1.Memory
 	}
 
+	if b2.Panic != nil {
+		merged.Panic = b2.Panic
+	} else if b1.Panic != nil {
+		merged.Panic = b1.Panic
+	}
+
 	// Merge custom parameters (b2 overrides b1)
 	for k, v := range b1.CustomParams {
 		merged.CustomParams[k] = v
@@ -203,6 +214,11 @@ type MemoryBehavior struct {
 	Pattern  string // "leak-slow", "leak-fast", "steady"
 	Amount   int64  // Bytes to allocate
 	Duration time.Duration
+}
+
+// PanicBehavior controls pod crash/panic
+type PanicBehavior struct {
+	Prob float64 // Probability (0.0-1.0)
 }
 
 // Parse parses a behavior string into a Behavior struct
@@ -259,6 +275,13 @@ func Parse(behaviorStr string) (*Behavior, error) {
 				return nil, fmt.Errorf("invalid memory: %w", err)
 			}
 			b.Memory = mem
+
+		case "panic":
+			panicBehavior, err := parsePanic(value)
+			if err != nil {
+				return nil, fmt.Errorf("invalid panic: %w", err)
+			}
+			b.Panic = panicBehavior
 
 		default:
 			b.CustomParams[key] = value
@@ -534,6 +557,16 @@ func parseError(value string) (*ErrorBehavior, error) {
 	return eb, nil
 }
 
+// parsePanic parses panic specifications
+// Examples: "0.5", "1.0"
+func parsePanic(value string) (*PanicBehavior, error) {
+	prob, err := strconv.ParseFloat(value, 64)
+	if err != nil {
+		return nil, err
+	}
+	return &PanicBehavior{Prob: prob}, nil
+}
+
 // parseCPU parses CPU behavior specifications
 // Examples: "spike", "spike:5s", "steady:10s:50"
 func parseCPU(value string) (*CPUBehavior, error) {
@@ -659,6 +692,15 @@ func (b *Behavior) ShouldError() (bool, int) {
 	return false, 0
 }
 
+// ShouldPanic determines if a panic should be triggered
+func (b *Behavior) ShouldPanic() bool {
+	if b.Panic == nil {
+		return false
+	}
+
+	return rand.Float64() < b.Panic.Prob
+}
+
 // applyCPU applies CPU load
 func (b *Behavior) applyCPU(ctx context.Context) {
 	go func() {
@@ -780,6 +822,9 @@ func (b *Behavior) GetAppliedBehaviors() []string {
 			memStr += fmt.Sprintf(":%s", b.Memory.Duration)
 		}
 		applied = append(applied, memStr)
+	}
+	if b.Panic != nil {
+		applied = append(applied, fmt.Sprintf("panic:%.2f", b.Panic.Prob))
 	}
 
 	// Include custom parameters

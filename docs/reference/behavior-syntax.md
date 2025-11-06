@@ -103,6 +103,30 @@ error=<code>:<probability>
 - `error=429:0.05` - 5% chance of 429 (rate limiting)
 - `error=404:0.1` - 10% chance of 404
 
+## Panic Behaviors
+
+Trigger pod crash/restart for testing resilience.
+
+### Syntax
+
+```
+panic=<probability>
+```
+
+**Examples:**
+- `panic=0.5` - 50% chance to crash pod
+- `panic=0.1` - 10% chance to crash pod
+- `panic=1.0` - Always crash pod (100%)
+
+**Use Cases:**
+- Test pod restart behavior
+- Test circuit breaker triggers
+- Test service mesh resilience
+- Test cascading failure scenarios
+- Verify liveness probe responses
+
+**Warning:** This will actually crash your pods! Use carefully with low probabilities initially.
+
 ## CPU Behaviors
 
 Simulate CPU-intensive operations.
@@ -242,6 +266,11 @@ latency=100-500ms,error=0.2
 error=0.8
 ```
 
+**Pod crash testing:**
+```
+panic=0.3
+```
+
 ### Targeted Scenarios
 
 **Slow product service:**
@@ -252,6 +281,11 @@ product-api:latency=1s
 **Failing payment service:**
 ```
 payment-api:error=503:0.5
+```
+
+**Crashing order service:**
+```
+order-api:panic=0.3
 ```
 
 **Multiple services degraded:**
@@ -280,6 +314,11 @@ order-api:error=0.7,product-api:latency=300ms,payment-api:latency=400ms
 latency=20-100ms,error=0.05,payment-api:error=0.1,db:latency=100-500ms
 ```
 
+**Extreme chaos with crashes:**
+```
+order-api:panic=0.1,product-api:error=0.5,latency=100-300ms
+```
+
 ## Default Behavior
 
 Set default behavior via environment variable:
@@ -300,7 +339,8 @@ Applied behaviors appear in responses:
 {
   "behaviors_applied": [
     "latency:fixed:100ms",
-    "error:503:0.30"
+    "error:503:0.30",
+    "panic:0.50"
   ]
 }
 ```
@@ -308,6 +348,7 @@ Applied behaviors appear in responses:
 Format includes details:
 - Latency: `latency:fixed:100ms` or `latency:range:50ms-200ms`
 - Error: `error:503:0.30` (code:probability)
+- Panic: `panic:0.50` (probability)
 - CPU: `cpu:spike:5s:intensity=90`
 - Memory: `memory:leak-slow:10485760:10m0s`
 

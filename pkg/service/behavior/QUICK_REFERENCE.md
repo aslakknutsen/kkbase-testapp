@@ -35,6 +35,21 @@ error=503:0.3         # 30% chance of 503
 error=429:0.05        # 5% chance of 429 (rate limiting)
 ```
 
+### Panic (Pod Crash)
+
+```bash
+# Crash pod with probability
+panic=0.5             # 50% chance to crash
+panic=0.1             # 10% chance to crash
+panic=1.0             # Always crash (100%)
+
+# Useful for testing:
+# - Pod restart behavior
+# - Circuit breakers
+# - Service mesh resilience
+# - Liveness probe responses
+```
+
 ### CPU Behaviors
 
 ```bash
@@ -143,14 +158,27 @@ curl "http://web:8080/api?behavior=order-api:error=0.7,product-api:latency=300ms
 curl "http://web:8080/api?behavior=payment-api:error=429:0.3"
 ```
 
-### Scenario 5: Testing Timeout Handling
+### Scenario 5: Pod Crash Testing
+
+```bash
+# Test pod restart behavior
+curl "http://web:8080/api?behavior=order-api:panic=0.3"
+
+# Test cascading failures with crashes
+curl "http://web:8080/api?behavior=order-api:panic=0.5,product-api:error=0.3"
+
+# Combine latency before crash (applied before panic)
+curl "http://web:8080/api?behavior=order-api:latency=100ms,panic=0.2"
+```
+
+### Scenario 6: Testing Timeout Handling
 
 ```bash
 # Make service extremely slow to test timeouts
 curl "http://web:8080/api?behavior=order-api:latency=5s"
 ```
 
-### Scenario 6: Global Latency with Specific Overrides
+### Scenario 7: Global Latency with Specific Overrides
 
 ```bash
 # Everyone slow, but order-api even slower
@@ -160,11 +188,14 @@ curl "http://web:8080/api?behavior=latency=100ms,order-api:latency=500ms"
 #   - others: 100ms latency (global)
 ```
 
-### Scenario 7: Chaos Testing
+### Scenario 8: Chaos Testing
 
 ```bash
 # Random chaos across services
 curl "http://web:8080/api?behavior=order-api:error=0.3,latency=100-500ms,product-api:error=0.2,payment-api:latency=200-800ms,error=0.1"
+
+# Extreme chaos with pod crashes
+curl "http://web:8080/api?behavior=order-api:panic=0.1,product-api:error=0.5,payment-api:latency=500ms"
 ```
 
 ---
