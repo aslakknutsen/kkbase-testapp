@@ -22,8 +22,9 @@ type Generator struct {
 
 // Template data structures
 type namespaceData struct {
-	AppName    string
-	Namespaces []string
+	AppName      string
+	Namespaces   []string
+	IstioEnabled bool
 }
 
 type workloadData struct {
@@ -157,8 +158,9 @@ func (g *Generator) GenerateAll() (map[string]string, error) {
 // GenerateNamespaces generates namespace manifests
 func (g *Generator) GenerateNamespaces() string {
 	data := namespaceData{
-		AppName:    g.spec.App.Name,
-		Namespaces: g.spec.App.Namespaces,
+		AppName:      g.spec.App.Name,
+		Namespaces:   g.spec.App.Namespaces,
+		IstioEnabled: g.spec.App.Providers.Mesh == "istio",
 	}
 
 	var buf bytes.Buffer

@@ -8,5 +8,8 @@ metadata:
   name: {{ $ns }}
   labels:
     app: {{ $.AppName }}
+{{- if $.IstioEnabled }}
+    istio-injection: enabled
+{{- end }}
 {{ end -}}
 
