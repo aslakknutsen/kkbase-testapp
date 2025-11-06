@@ -11,8 +11,8 @@ spec:
   {{- range .Hosts }}
   - {{ . }}
   {{- end }}
-  {{- if .HTTPRoutes }}
   http:
+  {{- if .HTTPRoutes }}
   {{- range .HTTPRoutes }}
   - name: {{ .Name }}
     {{- if .Match }}
@@ -44,7 +44,6 @@ spec:
       retryOn: {{ $.Retries.RetryOn }}
   {{- end }}
   {{- else if .HasTrafficSplit }}
-  http:
   - route:
     {{- range .TrafficSplit }}
     - destination:
@@ -52,6 +51,25 @@ spec:
         subset: {{ .Subset }}
       weight: {{ .Weight }}
     {{- end }}
+  {{- if .Timeout }}
+    timeout: {{ .Timeout }}
+  {{- end }}
+  {{- if .Retries }}
+    retries:
+      attempts: {{ .Retries.Attempts }}
+      {{- if .Retries.PerTryTimeout }}
+      perTryTimeout: {{ $.Retries.PerTryTimeout }}
+      {{- end }}
+      retryOn: {{ .Retries.RetryOn }}
+  {{- end }}
+  {{- else }}
+  - route:
+    - destination:
+        host: {{ .Name }}.{{ .Namespace }}.svc.cluster.local
+        {{- if .DefaultPort }}
+        port:
+          number: {{ .DefaultPort }}
+        {{- end }}
   {{- if .Timeout }}
     timeout: {{ .Timeout }}
   {{- end }}

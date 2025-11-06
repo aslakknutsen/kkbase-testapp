@@ -83,6 +83,7 @@ type virtualServiceData struct {
 	Retries         *retryPolicy
 	HasTrafficSplit bool
 	TrafficSplit    []trafficSplit
+	DefaultPort     int
 }
 
 type httpRoute struct {
@@ -193,6 +194,7 @@ func (g *MeshGenerator) generateVirtualService(svc types.ServiceConfig, mesh typ
 		Retries:         retries,
 		HasTrafficSplit: len(trafficSplits) > 0,
 		TrafficSplit:    trafficSplits,
+		DefaultPort:     svc.Ports.HTTP,
 	}
 
 	var buf bytes.Buffer
