@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"text/template"
 
-	"github.com/kagenti/kkbase/testapp/pkg/dsl/types"
+	"github.com/aslakknutsen/kkbase/testapp/pkg/dsl/types"
 )
 
 // GatewayGenerator generates Istio Gateway manifests for ingress

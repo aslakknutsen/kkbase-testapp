@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/kagenti/kkbase/testapp/pkg/dsl/types"
+	"github.com/aslakknutsen/kkbase/testapp/pkg/dsl/types"
 	"gopkg.in/yaml.v3"
 )
 

@@ -7,7 +7,7 @@ import (
 	"strings"
 	"text/template"
 
-	"github.com/kagenti/kkbase/testapp/pkg/dsl/types"
+	"github.com/aslakknutsen/kkbase/testapp/pkg/dsl/types"
 )
 
 //go:embed templates/*.tmpl
@@ -319,8 +319,14 @@ func (g *Generator) getEnvVars(svc *types.ServiceConfig) []envVarData {
 		"SERVICE_NAME":    svc.Name,
 		"SERVICE_VERSION": "1.0.0",
 		"HTTP_PORT":       fmt.Sprintf("%d", svc.Ports.HTTP),
-		"GRPC_PORT":       fmt.Sprintf("%d", svc.Ports.GRPC),
 		"METRICS_PORT":    fmt.Sprintf("%d", svc.Ports.Metrics),
+	}
+	
+	// For dual-protocol services, set GRPC_PORT to HTTP_PORT for unified port mode
+	if svc.HasHTTP() && svc.HasGRPC() {
+		env["GRPC_PORT"] = fmt.Sprintf("%d", svc.Ports.HTTP)
+	} else {
+		env["GRPC_PORT"] = fmt.Sprintf("%d", svc.Ports.GRPC)
 	}
 
 	for k, v := range env {
@@ -364,10 +370,19 @@ func (g *Generator) buildUpstreamsEnv(svc *types.ServiceConfig) string {
 			if target.Name == upstream.Name {
 				protocol := "http"
 				port := target.Ports.HTTP
-				if target.HasGRPC() && !target.HasHTTP() {
+				
+				// For dual-protocol services, use unified HTTP port
+				if target.HasHTTP() && target.HasGRPC() {
+					// Unified port mode: always use HTTP port
+					protocol = "http"
+					port = target.Ports.HTTP
+				} else if target.HasGRPC() && !target.HasHTTP() {
+					// gRPC-only service: use gRPC port
 					protocol = "grpc"
 					port = target.Ports.GRPC
 				}
+				// HTTP-only services already default to HTTP protocol and port
+				
 				url := fmt.Sprintf("%s://%s.%s.svc.cluster.local:%d",
 					protocol, target.Name, target.Namespace, port)
 
@@ -410,20 +425,30 @@ func (g *Generator) buildBehaviorString(svc *types.ServiceConfig) string {
 func (g *Generator) getPorts(svc *types.ServiceConfig) []portData {
 	var ports []portData
 
-	if svc.HasHTTP() {
+	// For dual-protocol services, use unified port (HTTP port handles both)
+	if svc.HasHTTP() && svc.HasGRPC() {
 		ports = append(ports, portData{
 			ContainerPort: svc.Ports.HTTP,
 			Name:          "http",
 			Protocol:      "TCP",
 		})
-	}
+	} else {
+		// Single-protocol services use separate ports
+		if svc.HasHTTP() {
+			ports = append(ports, portData{
+				ContainerPort: svc.Ports.HTTP,
+				Name:          "http",
+				Protocol:      "TCP",
+			})
+		}
 
-	if svc.HasGRPC() {
-		ports = append(ports, portData{
-			ContainerPort: svc.Ports.GRPC,
-			Name:          "grpc",
-			Protocol:      "TCP",
-		})
+		if svc.HasGRPC() {
+			ports = append(ports, portData{
+				ContainerPort: svc.Ports.GRPC,
+				Name:          "grpc",
+				Protocol:      "TCP",
+			})
+		}
 	}
 
 	ports = append(ports, portData{
@@ -438,22 +463,33 @@ func (g *Generator) getPorts(svc *types.ServiceConfig) []portData {
 func (g *Generator) getServicePorts(svc *types.ServiceConfig) []servicePortData {
 	var ports []servicePortData
 
-	if svc.HasHTTP() {
+	// For dual-protocol services, use unified port (HTTP port handles both)
+	if svc.HasHTTP() && svc.HasGRPC() {
 		ports = append(ports, servicePortData{
 			Name:       "http",
 			Port:       svc.Ports.HTTP,
 			TargetPort: "http",
 			Protocol:   "TCP",
 		})
-	}
+	} else {
+		// Single-protocol services use separate ports
+		if svc.HasHTTP() {
+			ports = append(ports, servicePortData{
+				Name:       "http",
+				Port:       svc.Ports.HTTP,
+				TargetPort: "http",
+				Protocol:   "TCP",
+			})
+		}
 
-	if svc.HasGRPC() {
-		ports = append(ports, servicePortData{
-			Name:       "grpc",
-			Port:       svc.Ports.GRPC,
-			TargetPort: "grpc",
-			Protocol:   "TCP",
-		})
+		if svc.HasGRPC() {
+			ports = append(ports, servicePortData{
+				Name:       "grpc",
+				Port:       svc.Ports.GRPC,
+				TargetPort: "grpc",
+				Protocol:   "TCP",
+			})
+		}
 	}
 
 	ports = append(ports, servicePortData{

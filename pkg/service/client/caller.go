@@ -10,9 +10,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/kagenti/kkbase/testapp/pkg/service"
-	"github.com/kagenti/kkbase/testapp/pkg/service/telemetry"
-	pb "github.com/kagenti/kkbase/testapp/proto/testservice"
+	"github.com/aslakknutsen/kkbase/testapp/pkg/service"
+	"github.com/aslakknutsen/kkbase/testapp/pkg/service/telemetry"
+	pb "github.com/aslakknutsen/kkbase/testapp/proto/testservice"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/propagation"

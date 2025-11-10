@@ -11,7 +11,7 @@ app:
   
   # Provider configuration - defines which ingress and mesh providers to use
   providers:
-    ingress: gateway-api  # Options: gateway-api, istio-gateway, k8s-ingress, openshift-routes, none
+    ingress: istio-gateway  # Options: gateway-api, istio-gateway, k8s-ingress, openshift-routes, none
     mesh: istio          # Options: istio, linkerd, gateway-api-mesh, none
   
   # Default mesh configuration applied to all services (unless overridden at service level)

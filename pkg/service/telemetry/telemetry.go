@@ -19,7 +19,7 @@ import (
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
 
-	"github.com/kagenti/kkbase/testapp/pkg/service"
+	"github.com/aslakknutsen/kkbase/testapp/pkg/service"
 )
 
 // Telemetry holds all observability components

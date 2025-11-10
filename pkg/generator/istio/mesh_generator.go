@@ -7,7 +7,7 @@ import (
 	"strings"
 	"text/template"
 
-	"github.com/kagenti/kkbase/testapp/pkg/dsl/types"
+	"github.com/aslakknutsen/kkbase/testapp/pkg/dsl/types"
 )
 
 //go:embed templates/*.tmpl
@@ -153,6 +153,16 @@ func (g *MeshGenerator) generateVirtualService(svc types.ServiceConfig, mesh typ
 			// Create routes for each path
 			if len(upstream.Paths) > 0 {
 				for _, path := range upstream.Paths {
+					// Determine port based on service protocol configuration
+					port := upstreamSvc.Ports.HTTP
+					if upstreamSvc.HasHTTP() && upstreamSvc.HasGRPC() {
+						// Dual-protocol service: use unified HTTP port
+						port = upstreamSvc.Ports.HTTP
+					} else if upstreamSvc.HasGRPC() && !upstreamSvc.HasHTTP() {
+						// gRPC-only service: use gRPC port
+						port = upstreamSvc.Ports.GRPC
+					}
+
 					route := httpRoute{
 						Name: fmt.Sprintf("route-%s", upstream.Name),
 						Match: []matchCondition{
@@ -161,7 +171,7 @@ func (g *MeshGenerator) generateVirtualService(svc types.ServiceConfig, mesh typ
 						Destination: destination{
 							Host:      upstreamSvc.Name,
 							Namespace: upstreamSvc.Namespace,
-							Port:      upstreamSvc.Ports.HTTP,
+							Port:      port,
 						},
 					}
 					httpRoutes = append(httpRoutes, route)
@@ -184,6 +194,16 @@ func (g *MeshGenerator) generateVirtualService(svc types.ServiceConfig, mesh typ
 		}
 	}
 
+	// Determine default port based on service protocol configuration
+	defaultPort := svc.Ports.HTTP
+	if svc.HasHTTP() && svc.HasGRPC() {
+		// Dual-protocol service: use unified HTTP port
+		defaultPort = svc.Ports.HTTP
+	} else if svc.HasGRPC() && !svc.HasHTTP() {
+		// gRPC-only service: use gRPC port
+		defaultPort = svc.Ports.GRPC
+	}
+
 	data := virtualServiceData{
 		Name:            svc.Name,
 		Namespace:       svc.Namespace,
@@ -194,7 +214,7 @@ func (g *MeshGenerator) generateVirtualService(svc types.ServiceConfig, mesh typ
 		Retries:         retries,
 		HasTrafficSplit: len(trafficSplits) > 0,
 		TrafficSplit:    trafficSplits,
-		DefaultPort:     svc.Ports.HTTP,
+		DefaultPort:     defaultPort,
 	}
 
 	var buf bytes.Buffer

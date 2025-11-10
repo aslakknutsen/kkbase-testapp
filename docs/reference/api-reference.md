@@ -305,7 +305,7 @@ Using Go client:
 ```go
 import (
     "context"
-    pb "github.com/kagenti/kkbase-testapp/proto/testservice"
+    pb "github.com/aslakknutsen/kkbase-testapp/proto/testservice"
     "google.golang.org/grpc"
 )
 

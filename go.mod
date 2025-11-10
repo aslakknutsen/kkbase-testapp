@@ -1,9 +1,10 @@
-module github.com/kagenti/kkbase/testapp
+module github.com/aslakknutsen/kkbase/testapp
 
 go 1.24.4
 
 require (
 	github.com/prometheus/client_golang v1.23.2
+	github.com/soheilhy/cmux v0.1.5
 	github.com/spf13/cobra v1.10.1
 	go.opentelemetry.io/otel v1.38.0
 	go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracegrpc v1.38.0

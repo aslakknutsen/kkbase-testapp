@@ -10,7 +10,7 @@ import (
 	"text/template"
 	"time"
 
-	"github.com/kagenti/kkbase/testapp/pkg/dsl/types"
+	"github.com/aslakknutsen/kkbase/testapp/pkg/dsl/types"
 )
 
 //go:embed templates/*.tmpl
