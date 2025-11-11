@@ -29,6 +29,7 @@ Step-by-step guides for common tasks.
 - **[Behavior Testing](guides/behavior-testing.md)** - Inject latency, errors, and resource patterns
 - **[Path-Based Routing](guides/path-routing.md)** - Route requests based on URL paths
 - **[Jaeger Setup](guides/jaeger-setup.md)** - Deploy distributed tracing
+- **[Istio Setup](guides/istio-setup.md)** - Configure Istio service mesh
 - **[Testing Strategies](guides/testing-strategies.md)** - Unit, integration, and E2E testing
 
 ## Reference

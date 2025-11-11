@@ -80,6 +80,83 @@ curl 'http://localhost:8080/?behavior=memory=leak-fast'   # Faster leak
 curl 'http://localhost:8080/?behavior=memory=leak-slow:5m'  # Custom duration
 ```
 
+### Pod Crash Testing (Panic)
+
+Trigger pod crashes to test resilience and recovery mechanisms.
+
+**⚠️ WARNING:** Panic behavior will actually crash your pods! Start with low probabilities to avoid excessive disruption.
+
+**Probability-based crash:**
+```bash
+curl 'http://localhost:8080/?behavior=panic=0.1'   # 10% chance to crash
+curl 'http://localhost:8080/?behavior=panic=0.5'   # 50% chance to crash
+curl 'http://localhost:8080/?behavior=panic=1.0'   # Always crash (100%)
+```
+
+**Use Cases:**
+
+- **Liveness probe testing** - Verify Kubernetes restarts crashed pods
+- **Circuit breaker validation** - Confirm circuit breakers open on pod failures
+- **Pod restart behavior** - Test application initialization and startup time
+- **Cascading failure scenarios** - See how failures propagate through the system
+- **Service mesh resilience** - Validate Istio/Linkerd retry and failover behavior
+
+**Examples:**
+
+Test pod restart:
+```bash
+# Low probability for gradual testing
+curl 'http://localhost:8080/?behavior=order-api:panic=0.2'
+
+# Watch pods restart
+kubectl get pods -w
+```
+
+Combine with latency (latency applied before crash):
+```bash
+curl 'http://localhost:8080/?behavior=order-api:latency=100ms,panic=0.3'
+```
+
+Target specific service in call chain:
+```bash
+curl 'http://localhost:8080/?behavior=payment-api:panic=0.1'
+```
+
+Test cascading failures with crashes:
+```bash
+curl '/?behavior=order-api:panic=0.5,product-api:error=0.3'
+```
+
+**Best Practices:**
+
+- Start with low probabilities (0.1 or less) for initial testing
+- Use in non-production environments only
+- Monitor pod restart counts: `kubectl get pods`
+- Check logs before crash: `kubectl logs <pod> --previous`
+- Combine with metrics to validate alerting
+
+**What Happens:**
+
+1. Service receives request with panic behavior
+2. Behavior engine evaluates probability
+3. If triggered, service calls `panic()` immediately
+4. Pod crashes and exits
+5. Kubernetes detects failure via liveness probe
+6. Kubernetes automatically restarts the pod
+7. New pod comes up and handles subsequent requests
+
+**Observability:**
+
+Panic behavior shows in responses before crash:
+```json
+{
+  "behaviors_applied": ["panic:0.50"],
+  "upstream_calls": []
+}
+```
+
+Note: If panic triggers, the response may not be received by the client.
+
 ### Combined Behaviors
 
 Apply multiple behaviors at once using commas:
@@ -254,7 +331,27 @@ curl '/?behavior=latency=10ms,error=0.01,product-api:latency=500ms,error=0.2'
 - Product API has additional 500ms latency + 20% errors
 - Realistic distributed system behavior
 
-### Scenario 7: Complete System Chaos
+### Scenario 7: Pod Crash Testing
+
+Test resilience to pod crashes:
+
+```bash
+curl '/?behavior=order-api:panic=0.3'
+```
+
+**Observe:**
+- Pods restarting via liveness probes
+- Kubernetes automatic recovery
+- Request redistribution to healthy pods
+- Circuit breaker activation
+- Service mesh failover behavior
+
+Combined with other failures:
+```bash
+curl '/?behavior=order-api:panic=0.2,product-api:error=0.3,latency=100ms'
+```
+
+### Scenario 8: Complete System Chaos
 
 Stress test with realistic chaos across all services:
 
@@ -266,6 +363,11 @@ curl '/?behavior=latency=20-100ms,error=0.05,payment-api:error=0.1,order-db:late
 - Mixed successes, failures, and latency
 - System resilience under stress
 - Monitoring/alerting effectiveness
+
+Extreme chaos with pod crashes:
+```bash
+curl '/?behavior=order-api:panic=0.1,product-api:error=0.5,payment-api:latency=500ms'
+```
 
 ## Testing Error Handling
 
@@ -363,6 +465,7 @@ The format includes complete details:
 
 - Latency: `latency:fixed:100ms` or `latency:range:50ms-200ms`
 - Error: `error:503:0.30` (code:probability)
+- Panic: `panic:0.50` (probability)
 - CPU: `cpu:spike:5s:intensity=90`
 - Memory: `memory:leak-slow:10485760:10m0s`
 - Custom: `custom:key=value`
