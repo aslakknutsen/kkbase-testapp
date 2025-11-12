@@ -55,9 +55,10 @@ func (s *Server) Call(ctx context.Context, req *pb.CallRequest) (*pb.ServiceResp
 	)
 	defer span.End()
 
-	// Track active requests
-	s.telemetry.IncActiveRequests("grpc")
-	defer s.telemetry.DecActiveRequests("grpc")
+	// Note: gRPC active request tracking is not part of standard gRPC metrics
+	// The interceptors track started_total and handled_total instead
+	// s.telemetry.IncActiveRequests("grpc")
+	// defer s.telemetry.DecActiveRequests("grpc")
 
 	// Parse behavior chain (supports targeted behaviors like "service:latency=100ms")
 	behaviorStr := req.Behavior
@@ -105,7 +106,8 @@ func (s *Server) Call(ctx context.Context, req *pb.CallRequest) (*pb.ServiceResp
 			resp.Body = fmt.Sprintf("Injected error: %d", errCode)
 
 			s.telemetry.RecordBehavior("error")
-			s.recordMetrics(statusCode, start)
+			// Note: gRPC metrics are now handled by interceptors
+			// s.recordMetrics(statusCode, start)
 
 			span.SetAttributes(
 				semconv.RPCGRPCStatusCodeKey.Int(int(grpc_codes.Internal)),
@@ -130,7 +132,9 @@ func (s *Server) Call(ctx context.Context, req *pb.CallRequest) (*pb.ServiceResp
 	resp := s.buildResponse(ctx, start, 200, behaviorsApplied, upstreamCalls)
 	resp.Body = fmt.Sprintf("Hello from %s (gRPC)", s.config.Name)
 
-	s.recordMetrics(200, start)
+	// Note: gRPC metrics are now handled by interceptors, so we don't need to record them here
+	// s.recordMetrics(200, start)
+	
 	span.SetAttributes(semconv.RPCGRPCStatusCodeKey.Int(int(grpc_codes.OK)))
 	span.SetStatus(codes.Ok, "")
 
@@ -160,7 +164,12 @@ func (s *Server) callAllUpstreams(ctx context.Context, behaviorStr string) []*pb
 
 		// Convert to pb.UpstreamCall and record metrics
 		call := s.resultToUpstreamCall(result)
-		s.telemetry.RecordUpstreamCall(name, int(call.Code), result.Duration)
+		// For gRPC upstreams, method is "Call", for HTTP upstreams it's "GET"
+		method := "Call"
+		if result.Protocol == "http" {
+			method = "GET"
+		}
+		s.telemetry.RecordUpstreamCall(method, name, int(call.Code), result.Duration)
 
 		calls = append(calls, call)
 	}

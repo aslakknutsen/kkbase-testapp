@@ -65,8 +65,8 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	defer span.End()
 
 	// Track active requests
-	s.telemetry.IncActiveRequests("http")
-	defer s.telemetry.DecActiveRequests("http")
+	s.telemetry.IncActiveRequests(r.Method, r.URL.Path)
+	defer s.telemetry.DecActiveRequests(r.Method, r.URL.Path)
 
 	// Create response
 	resp := &pb.ServiceResponse{
@@ -136,7 +136,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			resp.Duration = now.Sub(start).String()
 
 			s.telemetry.RecordBehavior("error")
-			s.sendResponse(w, resp, errCode, span, start)
+			s.sendResponse(w, r, resp, errCode, span, start)
 			return
 		}
 
@@ -163,7 +163,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			resp.Duration = now.Sub(start).String()
 
 			s.telemetry.RecordBehavior("path_not_found")
-			s.sendResponse(w, resp, 404, span, start)
+			s.sendResponse(w, r, resp, 404, span, start)
 			return
 		}
 
@@ -178,7 +178,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	resp.EndTime = now.Format(time.RFC3339Nano)
 	resp.Duration = now.Sub(start).String()
 
-	s.sendResponse(w, resp, 200, span, start)
+	s.sendResponse(w, r, resp, 200, span, start)
 }
 
 // resultToUpstreamCall converts a client.Result to pb.UpstreamCall (for upstream calls)
@@ -283,7 +283,7 @@ func (s *Server) callMatchedUpstreams(ctx context.Context, upstreams map[string]
 
 		// Convert to pb.UpstreamCall and record metrics
 		call := s.resultToUpstreamCall(result)
-		s.telemetry.RecordUpstreamCall(name, int(call.Code), result.Duration)
+		s.telemetry.RecordUpstreamCall("GET", name, int(call.Code), result.Duration)
 
 		calls = append(calls, call)
 	}
@@ -292,7 +292,7 @@ func (s *Server) callMatchedUpstreams(ctx context.Context, upstreams map[string]
 }
 
 // sendResponse sends the JSON response using protojson
-func (s *Server) sendResponse(w http.ResponseWriter, resp *pb.ServiceResponse, statusCode int, span trace.Span, start time.Time) {
+func (s *Server) sendResponse(w http.ResponseWriter, r *http.Request, resp *pb.ServiceResponse, statusCode int, span trace.Span, start time.Time) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(statusCode)
 
@@ -316,7 +316,7 @@ func (s *Server) sendResponse(w http.ResponseWriter, resp *pb.ServiceResponse, s
 
 	// Record metrics
 	duration := time.Since(start)
-	s.telemetry.RecordRequest("http", "GET", statusCode, duration)
+	s.telemetry.RecordRequest(r.Method, r.URL.Path, statusCode, duration)
 
 	// Log request
 	s.telemetry.Logger.Info("request_completed",

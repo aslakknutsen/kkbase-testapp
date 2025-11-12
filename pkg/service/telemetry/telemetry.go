@@ -33,11 +33,17 @@ type Telemetry struct {
 
 // Metrics holds Prometheus metrics
 type Metrics struct {
-	RequestsTotal        *prometheus.CounterVec
-	RequestDuration      *prometheus.HistogramVec
-	UpstreamCallsTotal   *prometheus.CounterVec
-	UpstreamDuration     *prometheus.HistogramVec
-	ActiveRequests       *prometheus.GaugeVec
+	// HTTP Server metrics (RED method)
+	HTTPServerRequestsTotal   *prometheus.CounterVec
+	HTTPServerRequestDuration *prometheus.HistogramVec
+	HTTPServerActiveRequests  *prometheus.GaugeVec
+
+	// HTTP Client metrics (Dependency monitoring)
+	HTTPClientRequestsTotal   *prometheus.CounterVec
+	HTTPClientRequestDuration *prometheus.HistogramVec
+	HTTPClientActiveRequests  *prometheus.GaugeVec
+
+	// Custom behavior metrics
 	BehaviorAppliedTotal *prometheus.CounterVec
 }
 
@@ -174,43 +180,55 @@ func initTracer(serviceName, namespace, endpoint string, cfg *service.Config) (t
 // initMetrics creates Prometheus metrics
 func initMetrics() *Metrics {
 	return &Metrics{
-		RequestsTotal: promauto.NewCounterVec(
+		// HTTP Server metrics (RED method)
+		HTTPServerRequestsTotal: promauto.NewCounterVec(
 			prometheus.CounterOpts{
-				Name: "testservice_requests_total",
-				Help: "Total number of requests",
+				Name: "http_server_requests_total",
+				Help: "Total number of HTTP server requests",
 			},
-			[]string{"service", "method", "status", "protocol"},
+			[]string{"method", "path", "status_code"},
 		),
-		RequestDuration: promauto.NewHistogramVec(
+		HTTPServerRequestDuration: promauto.NewHistogramVec(
 			prometheus.HistogramOpts{
-				Name:    "testservice_request_duration_seconds",
-				Help:    "Request duration in seconds",
+				Name:    "http_server_request_duration_seconds",
+				Help:    "HTTP server request duration in seconds",
 				Buckets: prometheus.DefBuckets,
 			},
-			[]string{"service", "method", "protocol"},
+			[]string{"method", "path", "status_code"},
 		),
-		UpstreamCallsTotal: promauto.NewCounterVec(
-			prometheus.CounterOpts{
-				Name: "testservice_upstream_calls_total",
-				Help: "Total number of upstream calls",
-			},
-			[]string{"service", "upstream", "status"},
-		),
-		UpstreamDuration: promauto.NewHistogramVec(
-			prometheus.HistogramOpts{
-				Name:    "testservice_upstream_duration_seconds",
-				Help:    "Upstream call duration in seconds",
-				Buckets: prometheus.DefBuckets,
-			},
-			[]string{"service", "upstream"},
-		),
-		ActiveRequests: promauto.NewGaugeVec(
+		HTTPServerActiveRequests: promauto.NewGaugeVec(
 			prometheus.GaugeOpts{
-				Name: "testservice_active_requests",
-				Help: "Number of active requests",
+				Name: "http_server_active_requests",
+				Help: "Number of active HTTP server requests",
 			},
-			[]string{"service", "protocol"},
+			[]string{"method", "path"},
 		),
+
+		// HTTP Client metrics (Dependency monitoring)
+		HTTPClientRequestsTotal: promauto.NewCounterVec(
+			prometheus.CounterOpts{
+				Name: "http_client_requests_total",
+				Help: "Total number of HTTP client requests",
+			},
+			[]string{"method", "destination_service", "status_code"},
+		),
+		HTTPClientRequestDuration: promauto.NewHistogramVec(
+			prometheus.HistogramOpts{
+				Name:    "http_client_request_duration_seconds",
+				Help:    "HTTP client request duration in seconds",
+				Buckets: prometheus.DefBuckets,
+			},
+			[]string{"method", "destination_service", "status_code"},
+		),
+		HTTPClientActiveRequests: promauto.NewGaugeVec(
+			prometheus.GaugeOpts{
+				Name: "http_client_active_requests",
+				Help: "Number of active HTTP client requests",
+			},
+			[]string{"destination_service"},
+		),
+
+		// Custom behavior metrics
 		BehaviorAppliedTotal: promauto.NewCounterVec(
 			prometheus.CounterOpts{
 				Name: "testservice_behavior_applied_total",
@@ -221,33 +239,37 @@ func initMetrics() *Metrics {
 	}
 }
 
-// RecordRequest records metrics for a request
-func (t *Telemetry) RecordRequest(protocol, method string, statusCode int, duration time.Duration) {
-	t.Metrics.RequestsTotal.WithLabelValues(
-		t.ServiceName,
+// RecordRequest records metrics for an HTTP server request
+func (t *Telemetry) RecordRequest(method, path string, statusCode int, duration time.Duration) {
+	statusCodeStr := fmt.Sprintf("%d", statusCode)
+	
+	t.Metrics.HTTPServerRequestsTotal.WithLabelValues(
 		method,
-		fmt.Sprintf("%d", statusCode),
-		protocol,
+		path,
+		statusCodeStr,
 	).Inc()
 
-	t.Metrics.RequestDuration.WithLabelValues(
-		t.ServiceName,
+	t.Metrics.HTTPServerRequestDuration.WithLabelValues(
 		method,
-		protocol,
+		path,
+		statusCodeStr,
 	).Observe(duration.Seconds())
 }
 
-// RecordUpstreamCall records metrics for an upstream call
-func (t *Telemetry) RecordUpstreamCall(upstream string, statusCode int, duration time.Duration) {
-	t.Metrics.UpstreamCallsTotal.WithLabelValues(
-		t.ServiceName,
-		upstream,
-		fmt.Sprintf("%d", statusCode),
+// RecordUpstreamCall records metrics for an HTTP client (upstream) call
+func (t *Telemetry) RecordUpstreamCall(method, destinationService string, statusCode int, duration time.Duration) {
+	statusCodeStr := fmt.Sprintf("%d", statusCode)
+	
+	t.Metrics.HTTPClientRequestsTotal.WithLabelValues(
+		method,
+		destinationService,
+		statusCodeStr,
 	).Inc()
 
-	t.Metrics.UpstreamDuration.WithLabelValues(
-		t.ServiceName,
-		upstream,
+	t.Metrics.HTTPClientRequestDuration.WithLabelValues(
+		method,
+		destinationService,
+		statusCodeStr,
 	).Observe(duration.Seconds())
 }
 
@@ -259,14 +281,24 @@ func (t *Telemetry) RecordBehavior(behaviorType string) {
 	).Inc()
 }
 
-// IncActiveRequests increments active request counter
-func (t *Telemetry) IncActiveRequests(protocol string) {
-	t.Metrics.ActiveRequests.WithLabelValues(t.ServiceName, protocol).Inc()
+// IncActiveRequests increments active HTTP server request counter
+func (t *Telemetry) IncActiveRequests(method, path string) {
+	t.Metrics.HTTPServerActiveRequests.WithLabelValues(method, path).Inc()
 }
 
-// DecActiveRequests decrements active request counter
-func (t *Telemetry) DecActiveRequests(protocol string) {
-	t.Metrics.ActiveRequests.WithLabelValues(t.ServiceName, protocol).Dec()
+// DecActiveRequests decrements active HTTP server request counter
+func (t *Telemetry) DecActiveRequests(method, path string) {
+	t.Metrics.HTTPServerActiveRequests.WithLabelValues(method, path).Dec()
+}
+
+// IncActiveClientRequests increments active HTTP client request counter
+func (t *Telemetry) IncActiveClientRequests(destinationService string) {
+	t.Metrics.HTTPClientActiveRequests.WithLabelValues(destinationService).Inc()
+}
+
+// DecActiveClientRequests decrements active HTTP client request counter
+func (t *Telemetry) DecActiveClientRequests(destinationService string) {
+	t.Metrics.HTTPClientActiveRequests.WithLabelValues(destinationService).Dec()
 }
 
 // StartSpan starts a new span with common attributes

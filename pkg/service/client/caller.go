@@ -13,6 +13,7 @@ import (
 	"github.com/aslakknutsen/kkbase/testapp/pkg/service"
 	"github.com/aslakknutsen/kkbase/testapp/pkg/service/telemetry"
 	pb "github.com/aslakknutsen/kkbase/testapp/proto/testservice"
+	grpc_prometheus "github.com/grpc-ecosystem/go-grpc-prometheus"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/propagation"
@@ -93,6 +94,10 @@ func (c *Caller) Call(ctx context.Context, name string, upstream *service.Upstre
 
 // callHTTP makes an HTTP call to an upstream service
 func (c *Caller) callHTTP(ctx context.Context, name string, upstream *service.UpstreamConfig, behaviorStr string, span trace.Span, start time.Time) Result {
+	// Track active client requests
+	c.telemetry.IncActiveClientRequests(name)
+	defer c.telemetry.DecActiveClientRequests(name)
+	
 	result := Result{
 		Name:     name,
 		URL:      upstream.URL,
@@ -189,6 +194,10 @@ func (c *Caller) callHTTP(ctx context.Context, name string, upstream *service.Up
 
 // callGRPC makes a gRPC call to an upstream service
 func (c *Caller) callGRPC(ctx context.Context, name string, upstream *service.UpstreamConfig, behaviorStr string, span trace.Span, start time.Time) Result {
+	// Track active client requests
+	c.telemetry.IncActiveClientRequests(name)
+	defer c.telemetry.DecActiveClientRequests(name)
+	
 	result := Result{
 		Name:     name,
 		URL:      upstream.URL,
@@ -214,8 +223,12 @@ func (c *Caller) callGRPC(ctx context.Context, name string, upstream *service.Up
 		semconv.ServerAddress(target),
 	)
 
-	// Create gRPC connection
-	conn, err := grpc.Dial(target, grpc.WithInsecure())
+	// Create gRPC connection with Prometheus interceptors
+	conn, err := grpc.Dial(target,
+		grpc.WithInsecure(),
+		grpc.WithUnaryInterceptor(grpc_prometheus.UnaryClientInterceptor),
+		grpc.WithStreamInterceptor(grpc_prometheus.StreamClientInterceptor),
+	)
 	if err != nil {
 		result.Error = err.Error()
 		result.Code = 0
