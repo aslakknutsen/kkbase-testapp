@@ -19,6 +19,7 @@ type Behavior struct {
 	CPU          *CPUBehavior
 	Memory       *MemoryBehavior
 	Panic        *PanicBehavior
+	CrashIfFile  *CrashIfFileBehavior
 	CustomParams map[string]string
 }
 
@@ -111,6 +112,11 @@ func (b *Behavior) String() string {
 		parts = append(parts, fmt.Sprintf("panic=%v", b.Panic.Prob))
 	}
 
+	if b.CrashIfFile != nil {
+		crashStr := fmt.Sprintf("crash-if-file=%s:%s", b.CrashIfFile.FilePath, strings.Join(b.CrashIfFile.InvalidContent, ";"))
+		parts = append(parts, crashStr)
+	}
+
 	if b.CPU != nil {
 		cpuStr := fmt.Sprintf("cpu=%s", b.CPU.Pattern)
 		if b.CPU.Duration > 0 {
@@ -188,6 +194,12 @@ func mergeBehaviors(b1, b2 *Behavior) *Behavior {
 		merged.Panic = b1.Panic
 	}
 
+	if b2.CrashIfFile != nil {
+		merged.CrashIfFile = b2.CrashIfFile
+	} else if b1.CrashIfFile != nil {
+		merged.CrashIfFile = b1.CrashIfFile
+	}
+
 	// Merge custom parameters (b2 overrides b1)
 	for k, v := range b1.CustomParams {
 		merged.CustomParams[k] = v
@@ -231,6 +243,12 @@ type MemoryBehavior struct {
 // PanicBehavior controls pod crash/panic
 type PanicBehavior struct {
 	Prob float64 // Probability (0.0-1.0)
+}
+
+// CrashIfFileBehavior crashes if specified file contains invalid content
+type CrashIfFileBehavior struct {
+	FilePath       string   // Path to the file to check
+	InvalidContent []string // List of invalid strings that trigger crash
 }
 
 // Parse parses a behavior string into a Behavior struct
@@ -294,6 +312,13 @@ func Parse(behaviorStr string) (*Behavior, error) {
 				return nil, fmt.Errorf("invalid panic: %w", err)
 			}
 			b.Panic = panicBehavior
+
+		case "crash-if-file":
+			crashIfFile, err := parseCrashIfFile(value)
+			if err != nil {
+				return nil, fmt.Errorf("invalid crash-if-file: %w", err)
+			}
+			b.CrashIfFile = crashIfFile
 
 		default:
 			b.CustomParams[key] = value
@@ -579,6 +604,45 @@ func parsePanic(value string) (*PanicBehavior, error) {
 	return &PanicBehavior{Prob: prob}, nil
 }
 
+// parseCrashIfFile parses crash-if-file specifications
+// Format: "/path/to/file:invalid1;invalid2"
+// Examples: "/config/app.conf:invalid", "/config/db.conf:bad;error"
+// Note: Uses semicolon to separate multiple invalid strings (comma is used for behavior separation)
+func parseCrashIfFile(value string) (*CrashIfFileBehavior, error) {
+	// Split by first colon to separate path from invalid content
+	colonIdx := strings.Index(value, ":")
+	if colonIdx < 0 {
+		return nil, fmt.Errorf("invalid format: expected 'path:invalid_content'")
+	}
+
+	filePath := strings.TrimSpace(value[:colonIdx])
+	if filePath == "" {
+		return nil, fmt.Errorf("file path cannot be empty")
+	}
+
+	invalidContentStr := strings.TrimSpace(value[colonIdx+1:])
+	if invalidContentStr == "" {
+		return nil, fmt.Errorf("invalid content list cannot be empty")
+	}
+
+	// Split invalid content by semicolon (to avoid conflict with behavior comma separator)
+	var invalidContent []string
+	for _, content := range strings.Split(invalidContentStr, ";") {
+		if trimmed := strings.TrimSpace(content); trimmed != "" {
+			invalidContent = append(invalidContent, trimmed)
+		}
+	}
+
+	if len(invalidContent) == 0 {
+		return nil, fmt.Errorf("at least one invalid content string required")
+	}
+
+	return &CrashIfFileBehavior{
+		FilePath:       filePath,
+		InvalidContent: invalidContent,
+	}, nil
+}
+
 // parseCPU parses CPU behavior specifications
 // Examples: "spike", "spike:5s", "steady:10s:50"
 func parseCPU(value string) (*CPUBehavior, error) {
@@ -790,6 +854,31 @@ func (b *Behavior) ShouldPanic() bool {
 	return rand.Float64() < b.Panic.Prob
 }
 
+// ShouldCrashOnFile checks if the configured file contains invalid content
+// Returns true if crash should occur, along with matched content and error message
+func (b *Behavior) ShouldCrashOnFile() (bool, string, string) {
+	if b.CrashIfFile == nil {
+		return false, "", ""
+	}
+
+	// Read the file
+	content, err := os.ReadFile(b.CrashIfFile.FilePath)
+	if err != nil {
+		// File read error - don't crash, just log
+		return false, "", fmt.Sprintf("failed to read file %s: %v", b.CrashIfFile.FilePath, err)
+	}
+
+	// Check if file contains any invalid strings
+	fileContent := string(content)
+	for _, invalidStr := range b.CrashIfFile.InvalidContent {
+		if strings.Contains(fileContent, invalidStr) {
+			return true, invalidStr, fmt.Sprintf("Config file %s contains invalid content: '%s'", b.CrashIfFile.FilePath, invalidStr)
+		}
+	}
+
+	return false, "", ""
+}
+
 // applyCPU applies CPU load
 func (b *Behavior) applyCPU(ctx context.Context) {
 	go func() {
@@ -958,6 +1047,9 @@ func (b *Behavior) GetAppliedBehaviors() []string {
 	}
 	if b.Panic != nil {
 		applied = append(applied, fmt.Sprintf("panic:%.2f", b.Panic.Prob))
+	}
+	if b.CrashIfFile != nil {
+		applied = append(applied, fmt.Sprintf("crash-if-file:%s:%s", b.CrashIfFile.FilePath, strings.Join(b.CrashIfFile.InvalidContent, ";")))
 	}
 
 	// Include custom parameters

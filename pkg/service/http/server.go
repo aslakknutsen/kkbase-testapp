@@ -117,6 +117,23 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			s.telemetry.Logger.Warn("Failed to apply behavior", zap.Error(err))
 		}
 
+		// Check for crash-if-file (do this BEFORE panic and error checks)
+		if shouldCrash, matched, msg := beh.ShouldCrashOnFile(); shouldCrash {
+			s.telemetry.Logger.Fatal("Config file contains invalid content - crashing as configured",
+				zap.String("service", s.config.Name),
+				zap.String("file", beh.CrashIfFile.FilePath),
+				zap.String("matched_content", matched),
+				zap.String("message", msg),
+			)
+			panic(fmt.Sprintf("Config file crash: %s", msg))
+		} else if msg != "" {
+			// Log file read errors without crashing
+			s.telemetry.Logger.Warn("Failed to check config file for invalid content",
+				zap.String("file", beh.CrashIfFile.FilePath),
+				zap.String("error", msg),
+			)
+		}
+
 		// Check for panic injection (do this BEFORE error check)
 		if beh.ShouldPanic() {
 			s.telemetry.Logger.Fatal("Panic behavior triggered - crashing pod",

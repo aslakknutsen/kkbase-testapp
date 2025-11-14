@@ -2,6 +2,8 @@ package behavior
 
 import (
 	"context"
+	"os"
+	"strings"
 	"testing"
 	"time"
 )
@@ -1241,5 +1243,377 @@ func TestBehaviorChainRoundTrip(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// TestParseCrashIfFile_SingleCondition tests parsing a single invalid content condition
+func TestParseCrashIfFile_SingleCondition(t *testing.T) {
+	result, err := parseCrashIfFile("/config/app.conf:invalid")
+	if err != nil {
+		t.Fatalf("parseCrashIfFile() failed: %v", err)
+	}
+
+	if result.FilePath != "/config/app.conf" {
+		t.Errorf("FilePath: got %q, want %q", result.FilePath, "/config/app.conf")
+	}
+
+	if len(result.InvalidContent) != 1 {
+		t.Fatalf("InvalidContent length: got %d, want 1", len(result.InvalidContent))
+	}
+
+	if result.InvalidContent[0] != "invalid" {
+		t.Errorf("InvalidContent[0]: got %q, want %q", result.InvalidContent[0], "invalid")
+	}
+}
+
+// TestParseCrashIfFile_MultipleConditions tests parsing multiple invalid content conditions
+func TestParseCrashIfFile_MultipleConditions(t *testing.T) {
+	result, err := parseCrashIfFile("/config/db.conf:bad;error;fail")
+	if err != nil {
+		t.Fatalf("parseCrashIfFile() failed: %v", err)
+	}
+
+	if result.FilePath != "/config/db.conf" {
+		t.Errorf("FilePath: got %q, want %q", result.FilePath, "/config/db.conf")
+	}
+
+	if len(result.InvalidContent) != 3 {
+		t.Fatalf("InvalidContent length: got %d, want 3", len(result.InvalidContent))
+	}
+
+	expected := []string{"bad", "error", "fail"}
+	for i, want := range expected {
+		if result.InvalidContent[i] != want {
+			t.Errorf("InvalidContent[%d]: got %q, want %q", i, result.InvalidContent[i], want)
+		}
+	}
+}
+
+// TestParseCrashIfFile_InvalidFormat tests error handling for malformed input
+func TestParseCrashIfFile_InvalidFormat(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+	}{
+		{"no colon", "/config/app.conf"},
+		{"empty path", ":invalid"},
+		{"empty content", "/config/app.conf:"},
+		{"only whitespace content", "/config/app.conf:   "},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := parseCrashIfFile(tt.input)
+			if err == nil {
+				t.Errorf("parseCrashIfFile(%q) expected error, got nil", tt.input)
+			}
+		})
+	}
+}
+
+// TestParseBehavior_CrashIfFile tests integration with Parse() function
+func TestParseBehavior_CrashIfFile(t *testing.T) {
+	tests := []struct {
+		name         string
+		input        string
+		wantFilePath string
+		wantContent  []string
+	}{
+		{
+			name:         "single crash-if-file",
+			input:        "crash-if-file=/config/app.conf:invalid",
+			wantFilePath: "/config/app.conf",
+			wantContent:  []string{"invalid"},
+		},
+		{
+			name:         "crash-if-file with multiple conditions",
+			input:        "crash-if-file=/etc/config:bad;error",
+			wantFilePath: "/etc/config",
+			wantContent:  []string{"bad", "error"},
+		},
+		{
+			name:         "combined with other behaviors",
+			input:        "latency=100ms,crash-if-file=/config/db:fail,error=0.1",
+			wantFilePath: "/config/db",
+			wantContent:  []string{"fail"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			b, err := Parse(tt.input)
+			if err != nil {
+				t.Fatalf("Parse() failed: %v", err)
+			}
+
+			if b.CrashIfFile == nil {
+				t.Fatal("CrashIfFile is nil")
+			}
+
+			if b.CrashIfFile.FilePath != tt.wantFilePath {
+				t.Errorf("FilePath: got %q, want %q", b.CrashIfFile.FilePath, tt.wantFilePath)
+			}
+
+			if len(b.CrashIfFile.InvalidContent) != len(tt.wantContent) {
+				t.Fatalf("InvalidContent length: got %d, want %d", len(b.CrashIfFile.InvalidContent), len(tt.wantContent))
+			}
+
+			for i, want := range tt.wantContent {
+				if b.CrashIfFile.InvalidContent[i] != want {
+					t.Errorf("InvalidContent[%d]: got %q, want %q", i, b.CrashIfFile.InvalidContent[i], want)
+				}
+			}
+		})
+	}
+}
+
+// TestShouldCrashOnFile_MatchFound tests that crash is triggered when file contains invalid content
+func TestShouldCrashOnFile_MatchFound(t *testing.T) {
+	// Create temp file with invalid content
+	tmpFile, err := os.CreateTemp("", "test-config-*.conf")
+	if err != nil {
+		t.Fatalf("Failed to create temp file: %v", err)
+	}
+	defer os.Remove(tmpFile.Name())
+
+	content := "database_url=invalid\nother_setting=value"
+	if _, err := tmpFile.WriteString(content); err != nil {
+		t.Fatalf("Failed to write temp file: %v", err)
+	}
+	tmpFile.Close()
+
+	b := &Behavior{
+		CrashIfFile: &CrashIfFileBehavior{
+			FilePath:       tmpFile.Name(),
+			InvalidContent: []string{"invalid"},
+		},
+	}
+
+	shouldCrash, matched, msg := b.ShouldCrashOnFile()
+	if !shouldCrash {
+		t.Error("Expected shouldCrash to be true")
+	}
+	if matched != "invalid" {
+		t.Errorf("Matched: got %q, want %q", matched, "invalid")
+	}
+	if !strings.Contains(msg, tmpFile.Name()) {
+		t.Errorf("Message should contain file path: %s", msg)
+	}
+	if !strings.Contains(msg, "invalid") {
+		t.Errorf("Message should contain matched content: %s", msg)
+	}
+}
+
+// TestShouldCrashOnFile_NoMatch tests that no crash occurs when file is valid
+func TestShouldCrashOnFile_NoMatch(t *testing.T) {
+	// Create temp file with valid content
+	tmpFile, err := os.CreateTemp("", "test-config-*.conf")
+	if err != nil {
+		t.Fatalf("Failed to create temp file: %v", err)
+	}
+	defer os.Remove(tmpFile.Name())
+
+	content := "database_url=valid\nother_setting=value"
+	if _, err := tmpFile.WriteString(content); err != nil {
+		t.Fatalf("Failed to write temp file: %v", err)
+	}
+	tmpFile.Close()
+
+	b := &Behavior{
+		CrashIfFile: &CrashIfFileBehavior{
+			FilePath:       tmpFile.Name(),
+			InvalidContent: []string{"invalid", "bad"},
+		},
+	}
+
+	shouldCrash, matched, msg := b.ShouldCrashOnFile()
+	if shouldCrash {
+		t.Error("Expected shouldCrash to be false")
+	}
+	if matched != "" {
+		t.Errorf("Expected empty matched string, got %q", matched)
+	}
+	if msg != "" {
+		t.Errorf("Expected empty message, got %q", msg)
+	}
+}
+
+// TestShouldCrashOnFile_FileNotFound tests graceful handling of missing file
+func TestShouldCrashOnFile_FileNotFound(t *testing.T) {
+	b := &Behavior{
+		CrashIfFile: &CrashIfFileBehavior{
+			FilePath:       "/nonexistent/config.conf",
+			InvalidContent: []string{"invalid"},
+		},
+	}
+
+	shouldCrash, matched, msg := b.ShouldCrashOnFile()
+	if shouldCrash {
+		t.Error("Expected shouldCrash to be false for missing file")
+	}
+	if matched != "" {
+		t.Errorf("Expected empty matched string, got %q", matched)
+	}
+	if !strings.Contains(msg, "failed to read file") {
+		t.Errorf("Expected error message about file read failure, got: %s", msg)
+	}
+}
+
+// TestShouldCrashOnFile_MultipleInvalidStrings tests checking multiple invalid strings
+func TestShouldCrashOnFile_MultipleInvalidStrings(t *testing.T) {
+	// Create temp file with one of the invalid strings
+	tmpFile, err := os.CreateTemp("", "test-config-*.conf")
+	if err != nil {
+		t.Fatalf("Failed to create temp file: %v", err)
+	}
+	defer os.Remove(tmpFile.Name())
+
+	content := "database_url=error\nother_setting=value"
+	if _, err := tmpFile.WriteString(content); err != nil {
+		t.Fatalf("Failed to write temp file: %v", err)
+	}
+	tmpFile.Close()
+
+	b := &Behavior{
+		CrashIfFile: &CrashIfFileBehavior{
+			FilePath:       tmpFile.Name(),
+			InvalidContent: []string{"invalid", "error", "bad"},
+		},
+	}
+
+	shouldCrash, matched, msg := b.ShouldCrashOnFile()
+	if !shouldCrash {
+		t.Error("Expected shouldCrash to be true")
+	}
+	if matched != "error" {
+		t.Errorf("Matched: got %q, want %q", matched, "error")
+	}
+	if !strings.Contains(msg, "error") {
+		t.Errorf("Message should contain matched content: %s", msg)
+	}
+}
+
+// TestBehavior_String_CrashIfFile tests serialization of crash-if-file behavior
+func TestBehavior_String_CrashIfFile(t *testing.T) {
+	tests := []struct {
+		name     string
+		behavior *Behavior
+		want     string
+	}{
+		{
+			name: "single invalid content",
+			behavior: &Behavior{
+				CrashIfFile: &CrashIfFileBehavior{
+					FilePath:       "/config/app.conf",
+					InvalidContent: []string{"invalid"},
+				},
+			},
+			want: "crash-if-file=/config/app.conf:invalid",
+		},
+		{
+			name: "multiple invalid content",
+			behavior: &Behavior{
+				CrashIfFile: &CrashIfFileBehavior{
+					FilePath:       "/config/db.conf",
+					InvalidContent: []string{"bad", "error"},
+				},
+			},
+			want: "crash-if-file=/config/db.conf:bad;error",
+		},
+		{
+			name: "combined with latency",
+			behavior: &Behavior{
+				Latency: &LatencyBehavior{
+					Type:  "fixed",
+					Value: 100 * time.Millisecond,
+				},
+				CrashIfFile: &CrashIfFileBehavior{
+					FilePath:       "/etc/config",
+					InvalidContent: []string{"fail"},
+				},
+			},
+			want: "latency=100ms,crash-if-file=/etc/config:fail",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := tt.behavior.String()
+			if got != tt.want {
+				t.Errorf("String() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+// TestBehavior_GetAppliedBehaviors_CrashIfFile tests that crash-if-file appears in applied list
+func TestBehavior_GetAppliedBehaviors_CrashIfFile(t *testing.T) {
+	b := &Behavior{
+		CrashIfFile: &CrashIfFileBehavior{
+			FilePath:       "/config/app.conf",
+			InvalidContent: []string{"invalid", "bad"},
+		},
+	}
+
+	applied := b.GetAppliedBehaviors()
+	found := false
+	for _, a := range applied {
+		if strings.Contains(a, "crash-if-file") {
+			found = true
+			if !strings.Contains(a, "/config/app.conf") {
+				t.Errorf("Applied behavior should contain file path: %s", a)
+			}
+			if !strings.Contains(a, "invalid") {
+				t.Errorf("Applied behavior should contain invalid content: %s", a)
+			}
+		}
+	}
+	if !found {
+		t.Error("crash-if-file not found in applied behaviors")
+	}
+}
+
+// TestMergeBehaviors_CrashIfFile tests merging behaviors with crash-if-file
+func TestMergeBehaviors_CrashIfFile(t *testing.T) {
+	b1 := &Behavior{
+		Latency: &LatencyBehavior{
+			Type:  "fixed",
+			Value: 100 * time.Millisecond,
+		},
+		CrashIfFile: &CrashIfFileBehavior{
+			FilePath:       "/config/app.conf",
+			InvalidContent: []string{"invalid"},
+		},
+		CustomParams: make(map[string]string),
+	}
+
+	b2 := &Behavior{
+		Error: &ErrorBehavior{
+			Rate: 503,
+			Prob: 0.5,
+		},
+		CrashIfFile: &CrashIfFileBehavior{
+			FilePath:       "/config/db.conf",
+			InvalidContent: []string{"bad"},
+		},
+		CustomParams: make(map[string]string),
+	}
+
+	merged := mergeBehaviors(b1, b2)
+
+	// b2's CrashIfFile should override b1's
+	if merged.CrashIfFile == nil {
+		t.Fatal("merged.CrashIfFile is nil")
+	}
+	if merged.CrashIfFile.FilePath != "/config/db.conf" {
+		t.Errorf("FilePath: got %q, want %q", merged.CrashIfFile.FilePath, "/config/db.conf")
+	}
+
+	// Other behaviors should be preserved
+	if merged.Latency == nil {
+		t.Error("Latency should be preserved from b1")
+	}
+	if merged.Error == nil {
+		t.Error("Error should be preserved from b2")
 	}
 }

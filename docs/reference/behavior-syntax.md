@@ -127,6 +127,172 @@ panic=<probability>
 
 **Warning:** This will actually crash your pods! Use carefully with low probabilities initially.
 
+## Crash on Invalid Config File
+
+Trigger pod crash when mounted config files contain invalid content. Simulates config-related crashes for testing ConfigMap propagation and error handling.
+
+### Syntax
+
+```
+crash-if-file=<file_path>:<invalid_content>
+```
+
+**File Path:** Absolute path to config file (typically mounted via ConfigMap)
+
+**Invalid Content:** Semicolon-separated list of strings that trigger crash
+
+### Examples
+
+**Single invalid string:**
+```
+crash-if-file=/config/app.conf:invalid
+```
+
+**Multiple invalid strings:**
+```
+crash-if-file=/config/db.conf:bad;error;fail
+```
+
+**Combined with other behaviors:**
+```
+latency=100ms,crash-if-file=/config/app.conf:invalid
+```
+
+### Environment Variable Configuration
+
+Set `CRASH_ON_FILE_CONTENT` to check on startup:
+
+```bash
+CRASH_ON_FILE_CONTENT="/config/app.conf:invalid"
+```
+
+**Multiple files (pipe-separated):**
+```bash
+CRASH_ON_FILE_CONTENT="/config/app.conf:invalid|/config/db.conf:bad;error"
+```
+
+### ConfigMap Scenario
+
+This behavior is designed for realistic ConfigMap propagation testing:
+
+```yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: app-config
+data:
+  app.conf: |
+    database_url=postgres://db:5432/myapp
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: myapp
+spec:
+  template:
+    spec:
+      containers:
+      - name: testservice
+        env:
+        - name: CRASH_ON_FILE_CONTENT
+          value: "/config/app.conf:invalid"
+        volumeMounts:
+        - name: config
+          mountPath: /config
+      volumes:
+      - name: config
+        configMap:
+          name: app-config
+```
+
+**To trigger crash:**
+1. Update ConfigMap: `database_url=invalid`
+2. Wait for kubelet sync (~60 seconds)
+3. Pod crashes on next request
+
+### Behavior Details
+
+**Check Timing:**
+- **Startup:** Checked once before servers start (if `CRASH_ON_FILE_CONTENT` set)
+- **Per-Request:** Checked before each HTTP/gRPC request (if behavior injected)
+
+**Match Logic:**
+- Uses simple substring matching
+- Any configured invalid string found in file triggers crash
+- Case-sensitive
+
+**Error Handling:**
+- File read errors: Logged but don't crash (fail-safe)
+- Missing files: Logged but don't crash
+
+**Logging:**
+- Clear error message with file path and matched content
+- Uses `Fatal` log level before crash
+
+### Use Cases
+
+**ConfigMap Propagation Bug:**
+```bash
+# Scenario: Bad config value propagates to running pods
+curl "/?behavior=crash-if-file=/config/app.conf:invalid"
+```
+
+**Database Connection Failure:**
+```bash
+CRASH_ON_FILE_CONTENT="/config/db.conf:connection_failed"
+```
+
+**Multi-Environment Config:**
+```bash
+# Crash if production config in dev environment
+CRASH_ON_FILE_CONTENT="/config/env:production"
+```
+
+**Complex Scenarios:**
+```bash
+# Combine with other behaviors
+curl "/?behavior=latency=500ms,crash-if-file=/config/app.conf:invalid,error=0.1"
+```
+
+### Runtime Injection
+
+**HTTP:**
+```bash
+curl "http://service:8080/?behavior=crash-if-file=/config/app.conf:invalid"
+```
+
+**gRPC:**
+```go
+req := &pb.CallRequest{
+    Behavior: "crash-if-file=/config/app.conf:invalid",
+}
+```
+
+**Header:**
+```bash
+curl -H "X-Behavior: crash-if-file=/config/app.conf:invalid" http://service:8080/
+```
+
+### Observability
+
+Applied behaviors appear in response (before crash):
+
+```json
+{
+  "behaviors_applied": [
+    "crash-if-file:/config/app.conf:invalid"
+  ]
+}
+```
+
+**Note:** Multiple invalid strings are separated by semicolons (`;`) to avoid conflicts with the comma-separated behavior syntax.
+
+**Log Output:**
+```
+Fatal: Config file contains invalid content - crashing as configured
+  file=/config/app.conf matched_content=invalid
+```
+
 ## CPU Behaviors
 
 Simulate CPU-intensive operations.
