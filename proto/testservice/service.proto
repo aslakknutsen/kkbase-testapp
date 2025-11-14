@@ -1,0 +1,79 @@
+syntax = "proto3";
+
+package testservice;
+
+option go_package = "github.com/kagenti/kkbase/testapp/proto/testservice";
+
+// TestService provides a synthetic service for testing monitoring systems
+service TestService {
+  // Call handles a request with configurable behavior
+  rpc Call(CallRequest) returns (ServiceResponse);
+}
+
+// CallRequest defines the parameters for a service call
+message CallRequest {
+  // Behavior directives for this request
+  // Format: "latency=100ms,error=0.1,cpu=spike"
+  string behavior = 1;
+  
+  // Optional metadata to include in response
+  map<string, string> metadata = 2;
+  
+  // Request body/payload
+  string body = 3;
+}
+
+// ServiceResponse contains the result and call chain information
+message ServiceResponse {
+  // Service identification
+  ServiceInfo service = 1;
+  
+  // Request timing
+  string start_time = 2;
+  string end_time = 3;
+  string duration = 4;
+  
+  // Response details
+  int32 code = 5;
+  string body = 6;
+  
+  // Trace information
+  string trace_id = 7;
+  string span_id = 8;
+  
+  // Upstream calls made (recursive)
+  repeated UpstreamCall upstream_calls = 9;
+  
+  // Applied behaviors
+  repeated string behaviors_applied = 10;
+  
+  // URL/method that was called (for gRPC, the full method name)
+  string url = 11;
+}
+
+// ServiceInfo describes the service that handled the request
+message ServiceInfo {
+  string name = 1;
+  string version = 2;
+  string namespace = 3;
+  string pod = 4;
+  string node = 5;
+  string protocol = 6;
+}
+
+// UpstreamCall represents a call to an upstream service
+message UpstreamCall {
+  string name = 1;
+  string uri = 2;
+  string protocol = 3;
+  string duration = 4;
+  int32 code = 5;
+  string error = 6;
+  
+  // Nested upstream calls
+  repeated UpstreamCall upstream_calls = 7;
+  
+  // Applied behaviors
+  repeated string behaviors_applied = 8;
+}
+
