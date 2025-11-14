@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"math"
 	"math/rand"
+	"os"
 	"runtime"
 	"strconv"
 	"strings"
@@ -125,6 +126,16 @@ func (b *Behavior) String() string {
 			if b.Memory.Duration > 0 {
 				memStr += fmt.Sprintf(":%s", b.Memory.Duration)
 			}
+		} else if b.Memory.Pattern == "spike" {
+			// Format spike pattern with size and optional duration
+			if b.Memory.Percentage > 0 {
+				memStr = fmt.Sprintf("memory=spike:%d%%", b.Memory.Percentage)
+			} else {
+				memStr = fmt.Sprintf("memory=spike:%s", formatBytes(b.Memory.Amount))
+			}
+			if b.Memory.Duration > 0 {
+				memStr += fmt.Sprintf(":%s", b.Memory.Duration)
+			}
 		} else {
 			memStr = fmt.Sprintf("memory=%s", formatBytes(b.Memory.Amount))
 		}
@@ -211,9 +222,10 @@ type CPUBehavior struct {
 
 // MemoryBehavior controls memory usage patterns
 type MemoryBehavior struct {
-	Pattern  string // "leak-slow", "leak-fast", "steady"
-	Amount   int64  // Bytes to allocate
-	Duration time.Duration
+	Pattern    string // "leak-slow", "leak-fast", "steady", "spike"
+	Amount     int64  // Bytes to allocate
+	Duration   time.Duration
+	Percentage int // If >0, use percentage of container limit instead of Amount
 }
 
 // PanicBehavior controls pod crash/panic
@@ -596,8 +608,49 @@ func parseCPU(value string) (*CPUBehavior, error) {
 	return cb, nil
 }
 
+// getContainerMemoryLimit attempts to determine the container memory limit
+// using the following fallback chain:
+// 1. GOMEMBALLAST environment variable
+// 2. cgroup v1: /sys/fs/cgroup/memory/memory.limit_in_bytes
+// 3. cgroup v2: /sys/fs/cgroup/memory.max
+// Returns error if none are available or readable
+func getContainerMemoryLimit() (int64, error) {
+	// Try GOMEMBALLAST environment variable first
+	if ballast := os.Getenv("GOMEMBALLAST"); ballast != "" {
+		limit, err := parseBytes(ballast)
+		if err == nil {
+			return limit, nil
+		}
+	}
+
+	// Try cgroup v1
+	if data, err := os.ReadFile("/sys/fs/cgroup/memory/memory.limit_in_bytes"); err == nil {
+		limitStr := strings.TrimSpace(string(data))
+		limit, err := strconv.ParseInt(limitStr, 10, 64)
+		if err == nil && limit > 0 {
+			// Filter out "no limit" value (very large number)
+			if limit < (1 << 62) {
+				return limit, nil
+			}
+		}
+	}
+
+	// Try cgroup v2
+	if data, err := os.ReadFile("/sys/fs/cgroup/memory.max"); err == nil {
+		limitStr := strings.TrimSpace(string(data))
+		if limitStr != "max" {
+			limit, err := strconv.ParseInt(limitStr, 10, 64)
+			if err == nil && limit > 0 {
+				return limit, nil
+			}
+		}
+	}
+
+	return 0, fmt.Errorf("unable to determine container memory limit: GOMEMBALLAST not set and cgroup files not accessible")
+}
+
 // parseMemory parses memory behavior specifications
-// Examples: "leak-slow", "leak-slow:10m", "10Mi", "1Gi"
+// Examples: "leak-slow", "leak-slow:10m", "10Mi", "1Gi", "spike:500Mi", "spike:80%:30s"
 func parseMemory(value string) (*MemoryBehavior, error) {
 	parts := strings.Split(value, ":")
 	mb := &MemoryBehavior{
@@ -606,8 +659,44 @@ func parseMemory(value string) (*MemoryBehavior, error) {
 		Duration: 10 * time.Minute,
 	}
 
-	// Check if first part is a leak pattern
-	if strings.HasPrefix(parts[0], "leak") {
+	// Check if first part is a spike pattern
+	if parts[0] == "spike" {
+		// Spike pattern: spike:500Mi or spike:500Mi:30s or spike:80% or spike:80%:30s
+		if len(parts) < 2 {
+			return nil, fmt.Errorf("spike requires size: spike:500Mi or spike:80%%")
+		}
+
+		sizeStr := parts[1]
+
+		// Check if it's a percentage
+		if strings.HasSuffix(sizeStr, "%") {
+			percentStr := strings.TrimSuffix(sizeStr, "%")
+			percent, err := strconv.Atoi(percentStr)
+			if err != nil {
+				return nil, fmt.Errorf("invalid percentage: %w", err)
+			}
+			if percent < 1 || percent > 100 {
+				return nil, fmt.Errorf("percentage must be between 1 and 100, got %d", percent)
+			}
+			mb.Percentage = percent
+		} else {
+			// Parse as byte amount
+			amount, err := parseBytes(sizeStr)
+			if err != nil {
+				return nil, fmt.Errorf("invalid spike size: %w", err)
+			}
+			mb.Amount = amount
+		}
+
+		// Parse optional duration
+		if len(parts) > 2 {
+			d, err := time.ParseDuration(parts[2])
+			if err != nil {
+				return nil, fmt.Errorf("invalid spike duration: %w", err)
+			}
+			mb.Duration = d
+		}
+	} else if strings.HasPrefix(parts[0], "leak") {
 		// It's a leak pattern like "leak-slow" or "leak-fast"
 		if len(parts) > 1 {
 			d, err := time.ParseDuration(parts[1])
@@ -773,6 +862,50 @@ func (b *Behavior) applyMemory(ctx context.Context) {
 				totalAllocated += int64(allocSize)
 			}
 			time.Sleep(b.Memory.Duration)
+
+		case "spike":
+			// Determine target allocation amount
+			targetAmount := b.Memory.Amount
+			if b.Memory.Percentage > 0 {
+				// Calculate from container limit
+				limit, err := getContainerMemoryLimit()
+				if err != nil {
+					// Log error but don't fail - this is best-effort
+					fmt.Fprintf(os.Stderr, "Warning: unable to calculate percentage-based memory spike: %v\n", err)
+					return
+				}
+				targetAmount = limit * int64(b.Memory.Percentage) / 100
+			}
+
+			// Allocate memory immediately in large chunks for faster allocation
+			largeChunkSize := 10 * 1024 * 1024 // 10MB chunks for speed
+			for totalAllocated < targetAmount {
+				// Allocate the remaining or one chunk, whichever is smaller
+				remaining := targetAmount - totalAllocated
+				chunkSize := largeChunkSize
+				if remaining < int64(chunkSize) {
+					chunkSize = int(remaining)
+				}
+
+				chunk := make([]byte, chunkSize)
+				// Touch all pages to ensure physical allocation
+				for i := 0; i < len(chunk); i += 4096 {
+					chunk[i] = byte(i)
+				}
+				memHog = append(memHog, chunk)
+				totalAllocated += int64(chunkSize)
+			}
+
+			// Hold for the specified duration
+			select {
+			case <-ctx.Done():
+				// Release and return early
+				memHog = nil
+				runtime.GC()
+				return
+			case <-time.After(b.Memory.Duration):
+				// Duration elapsed, will release below
+			}
 		}
 
 		// Keep memory allocated until context is done or duration expires

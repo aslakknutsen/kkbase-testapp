@@ -156,6 +156,90 @@ func TestParseBehavior(t *testing.T) {
 			},
 		},
 		{
+			name:      "memory spike with size",
+			input:     "memory=spike:500Mi",
+			wantError: false,
+			validate: func(t *testing.T, b *Behavior) {
+				if b.Memory == nil {
+					t.Fatal("expected memory behavior")
+				}
+				if b.Memory.Pattern != "spike" {
+					t.Errorf("expected spike pattern, got %s", b.Memory.Pattern)
+				}
+				expectedAmount := int64(500 * 1024 * 1024)
+				if b.Memory.Amount != expectedAmount {
+					t.Errorf("expected amount %d, got %d", expectedAmount, b.Memory.Amount)
+				}
+			},
+		},
+		{
+			name:      "memory spike with size and duration",
+			input:     "memory=spike:1Gi:30s",
+			wantError: false,
+			validate: func(t *testing.T, b *Behavior) {
+				if b.Memory == nil {
+					t.Fatal("expected memory behavior")
+				}
+				if b.Memory.Pattern != "spike" {
+					t.Errorf("expected spike pattern, got %s", b.Memory.Pattern)
+				}
+				expectedAmount := int64(1024 * 1024 * 1024)
+				if b.Memory.Amount != expectedAmount {
+					t.Errorf("expected amount %d, got %d", expectedAmount, b.Memory.Amount)
+				}
+				expectedDuration := 30 * time.Second
+				if b.Memory.Duration != expectedDuration {
+					t.Errorf("expected duration %s, got %s", expectedDuration, b.Memory.Duration)
+				}
+			},
+		},
+		{
+			name:      "memory spike with percentage",
+			input:     "memory=spike:80%",
+			wantError: false,
+			validate: func(t *testing.T, b *Behavior) {
+				if b.Memory == nil {
+					t.Fatal("expected memory behavior")
+				}
+				if b.Memory.Pattern != "spike" {
+					t.Errorf("expected spike pattern, got %s", b.Memory.Pattern)
+				}
+				if b.Memory.Percentage != 80 {
+					t.Errorf("expected percentage 80, got %d", b.Memory.Percentage)
+				}
+			},
+		},
+		{
+			name:      "memory spike with percentage and duration",
+			input:     "memory=spike:80%:60s",
+			wantError: false,
+			validate: func(t *testing.T, b *Behavior) {
+				if b.Memory == nil {
+					t.Fatal("expected memory behavior")
+				}
+				if b.Memory.Pattern != "spike" {
+					t.Errorf("expected spike pattern, got %s", b.Memory.Pattern)
+				}
+				if b.Memory.Percentage != 80 {
+					t.Errorf("expected percentage 80, got %d", b.Memory.Percentage)
+				}
+				expectedDuration := 60 * time.Second
+				if b.Memory.Duration != expectedDuration {
+					t.Errorf("expected duration %s, got %s", expectedDuration, b.Memory.Duration)
+				}
+			},
+		},
+		{
+			name:      "memory spike without size",
+			input:     "memory=spike",
+			wantError: true,
+		},
+		{
+			name:      "memory spike with invalid percentage",
+			input:     "memory=spike:150%",
+			wantError: true,
+		},
+		{
 			name:      "combined behaviors",
 			input:     "latency=100ms,error=500:0.5",
 			wantError: false,
@@ -901,6 +985,57 @@ func TestFullRoundTrip(t *testing.T) {
 				}
 				if b1.Memory.Pattern != b2.Memory.Pattern {
 					t.Errorf("memory pattern: got %s, want %s", b2.Memory.Pattern, b1.Memory.Pattern)
+				}
+				if b1.Memory.Duration != b2.Memory.Duration {
+					t.Errorf("memory duration: got %s, want %s", b2.Memory.Duration, b1.Memory.Duration)
+				}
+			},
+		},
+		{
+			name:  "memory spike with size",
+			input: "memory=spike:500Mi",
+			validate: func(t *testing.T, b1, b2 *Behavior) {
+				if b1.Memory == nil || b2.Memory == nil {
+					t.Fatal("memory behavior is nil")
+				}
+				if b1.Memory.Pattern != b2.Memory.Pattern {
+					t.Errorf("memory pattern: got %s, want %s", b2.Memory.Pattern, b1.Memory.Pattern)
+				}
+				if b1.Memory.Amount != b2.Memory.Amount {
+					t.Errorf("memory amount: got %d, want %d", b2.Memory.Amount, b1.Memory.Amount)
+				}
+			},
+		},
+		{
+			name:  "memory spike with size and duration",
+			input: "memory=spike:1Gi:30s",
+			validate: func(t *testing.T, b1, b2 *Behavior) {
+				if b1.Memory == nil || b2.Memory == nil {
+					t.Fatal("memory behavior is nil")
+				}
+				if b1.Memory.Pattern != b2.Memory.Pattern {
+					t.Errorf("memory pattern: got %s, want %s", b2.Memory.Pattern, b1.Memory.Pattern)
+				}
+				if b1.Memory.Amount != b2.Memory.Amount {
+					t.Errorf("memory amount: got %d, want %d", b2.Memory.Amount, b1.Memory.Amount)
+				}
+				if b1.Memory.Duration != b2.Memory.Duration {
+					t.Errorf("memory duration: got %s, want %s", b2.Memory.Duration, b1.Memory.Duration)
+				}
+			},
+		},
+		{
+			name:  "memory spike with percentage",
+			input: "memory=spike:80%:1m",
+			validate: func(t *testing.T, b1, b2 *Behavior) {
+				if b1.Memory == nil || b2.Memory == nil {
+					t.Fatal("memory behavior is nil")
+				}
+				if b1.Memory.Pattern != b2.Memory.Pattern {
+					t.Errorf("memory pattern: got %s, want %s", b2.Memory.Pattern, b1.Memory.Pattern)
+				}
+				if b1.Memory.Percentage != b2.Memory.Percentage {
+					t.Errorf("memory percentage: got %d, want %d", b2.Memory.Percentage, b1.Memory.Percentage)
 				}
 				if b1.Memory.Duration != b2.Memory.Duration {
 					t.Errorf("memory duration: got %s, want %s", b2.Memory.Duration, b1.Memory.Duration)

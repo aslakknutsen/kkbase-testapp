@@ -183,6 +183,61 @@ memory=leak-fast:<duration>
 
 Faster memory leak pattern.
 
+### Memory Spike
+
+Rapidly allocate memory for sudden resource consumption testing.
+
+```
+memory=spike:<size>
+memory=spike:<size>:<duration>
+memory=spike:<percentage>
+memory=spike:<percentage>:<duration>
+```
+
+**Size Examples:**
+- `memory=spike:500Mi` - Allocate 500MB immediately, hold for 10m (default)
+- `memory=spike:1Gi:30s` - Allocate 1GB, hold for 30 seconds
+- `memory=spike:100Mi:2m` - Allocate 100MB, hold for 2 minutes
+
+**Percentage Examples:**
+- `memory=spike:80%` - Allocate 80% of container limit, hold for 10m
+- `memory=spike:80%:60s` - Allocate 80% of container limit, hold for 60s
+
+**Size Units:** `Mi` (mebibytes), `Gi` (gibibytes)
+
+**Percentage Behavior:**
+- Requires container memory limit detection
+- Uses `GOMEMBALLAST` env var or cgroup limits
+- Fails gracefully if limit cannot be determined
+
+**Allocation Characteristics:**
+- **Immediate**: Allocates memory as fast as possible (unlike leak patterns)
+- **Sustained**: Holds allocation for specified duration
+- **Clean Release**: Releases memory and triggers GC after duration
+
+**Use Cases:**
+- **OOMKilled testing**: Spike beyond container limit to trigger OOM
+- **Noisy neighbor simulation**: Test shared node resource contention
+- **Memory pressure testing**: Verify behavior under low memory conditions
+- **Resource exhaustion**: Combine with CPU spike for full exhaustion
+
+**Example Scenarios:**
+
+Trigger OOM kill:
+```
+memory=spike:150%:30s
+```
+
+Simulate noisy neighbor on shared node:
+```
+memory=spike:2Gi:5m
+```
+
+Combined resource exhaustion:
+```
+cpu=spike:10s:90,memory=spike:80%:10s
+```
+
 ## Service-Targeted Behaviors
 
 Apply behaviors to specific services in the call chain.
@@ -350,7 +405,8 @@ Format includes details:
 - Error: `error:503:0.30` (code:probability)
 - Panic: `panic:0.50` (probability)
 - CPU: `cpu:spike:5s:intensity=90`
-- Memory: `memory:leak-slow:10485760:10m0s`
+- Memory (leak): `memory:leak-slow:10485760:10m0s`
+- Memory (spike): `memory:spike:524288000:30s` or `memory:spike:80%:1m0s`
 
 ## Common Mistakes
 
