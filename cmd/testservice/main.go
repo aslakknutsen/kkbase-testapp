@@ -56,6 +56,12 @@ func main() {
 		checkCrashOnFileContent(crashOnFileContent, tel)
 	}
 
+	// Check for ERROR_ON_FILE_CONTENT configuration
+	if errorOnFileContent := os.Getenv("ERROR_ON_FILE_CONTENT"); errorOnFileContent != "" {
+		tel.Logger.Info("Configuring error-on-file behavior", zap.String("config", errorOnFileContent))
+		checkErrorOnFileContent(errorOnFileContent, tel, cfg)
+	}
+
 	// Create servers
 	httpSrv := httpserver.NewServer(cfg, tel)
 	grpcSrv := grpcserver.NewServer(cfg, tel)
@@ -236,5 +242,57 @@ func checkCrashOnFileContent(config string, tel *telemetry.Telemetry) {
 				zap.String("message", msg))
 			os.Exit(1)
 		}
+	}
+}
+
+// checkErrorOnFileContent validates ERROR_ON_FILE_CONTENT env var and adds it to default behavior
+func checkErrorOnFileContent(config string, tel *telemetry.Telemetry, cfg *service.Config) {
+	// Split by pipe to handle multiple file checks
+	fileChecks := strings.Split(config, "|")
+	
+	var errorBehaviors []string
+	for _, check := range fileChecks {
+		check = strings.TrimSpace(check)
+		if check == "" {
+			continue
+		}
+
+		// Parse using the same format as error-if-file behavior
+		errorBehavior, err := behavior.Parse(fmt.Sprintf("error-if-file=%s", check))
+		if err != nil {
+			tel.Logger.Warn("Failed to parse ERROR_ON_FILE_CONTENT entry",
+				zap.String("entry", check),
+				zap.Error(err))
+			continue
+		}
+
+		if errorBehavior.ErrorIfFile == nil {
+			continue
+		}
+
+		// Check if file contains invalid content at startup (just for logging)
+		shouldErr, errCode, matched, msg := errorBehavior.ShouldErrorOnFile()
+		if shouldErr {
+			tel.Logger.Warn("File contains invalid content - will return errors on requests",
+				zap.String("file", errorBehavior.ErrorIfFile.FilePath),
+				zap.String("matched_content", matched),
+				zap.Int("error_code", errCode),
+				zap.String("message", msg))
+		}
+
+		// Add to list of behaviors
+		errorBehaviors = append(errorBehaviors, fmt.Sprintf("error-if-file=%s", check))
+	}
+
+	// Append to default behavior if any error-if-file behaviors were configured
+	if len(errorBehaviors) > 0 {
+		behaviorStr := strings.Join(errorBehaviors, ",")
+		if cfg.DefaultBehavior != "" {
+			cfg.DefaultBehavior += "," + behaviorStr
+		} else {
+			cfg.DefaultBehavior = behaviorStr
+		}
+		tel.Logger.Info("Added error-if-file to default behavior",
+			zap.String("behavior", behaviorStr))
 	}
 }

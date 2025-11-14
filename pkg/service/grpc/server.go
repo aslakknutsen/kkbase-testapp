@@ -105,6 +105,38 @@ func (s *Server) Call(ctx context.Context, req *pb.CallRequest) (*pb.ServiceResp
 			)
 		}
 
+		// Check for error-if-file (do this BEFORE panic and error checks)
+		if shouldErr, errCode, matched, msg := beh.ShouldErrorOnFile(); shouldErr {
+			s.telemetry.Logger.Warn("File contains invalid content - returning error as configured",
+				zap.String("service", s.config.Name),
+				zap.String("file", beh.ErrorIfFile.FilePath),
+				zap.String("matched_content", matched),
+				zap.Int("error_code", errCode),
+				zap.String("message", msg),
+			)
+			
+			grpcCode := httpToGRPCCode(errCode)
+			behaviorsApplied = beh.GetAppliedBehaviors()
+			
+			resp := s.buildResponse(ctx, start, errCode, behaviorsApplied, nil)
+			resp.Body = fmt.Sprintf("File validation failed: %s", msg)
+
+			s.telemetry.RecordBehavior("error-if-file")
+			
+			span.SetAttributes(
+				semconv.RPCGRPCStatusCodeKey.Int(int(grpcCode)),
+				semconv.ErrorTypeKey.String(fmt.Sprintf("grpc_%d", errCode)),
+			)
+			span.SetStatus(codes.Error, msg)
+			return resp, nil
+		} else if msg != "" {
+			// Log file read errors without returning error
+			s.telemetry.Logger.Warn("Failed to check file for invalid content",
+				zap.String("file", beh.ErrorIfFile.FilePath),
+				zap.String("error", msg),
+			)
+		}
+
 		// Check for panic injection (do this BEFORE error check)
 		if beh.ShouldPanic() {
 			s.telemetry.Logger.Fatal("Panic behavior triggered - crashing pod",
@@ -266,4 +298,34 @@ func extractClientAddr(ctx context.Context) string {
 		return p.Addr.String()
 	}
 	return ""
+}
+
+// httpToGRPCCode maps HTTP status codes to gRPC status codes
+func httpToGRPCCode(httpCode int) grpc_codes.Code {
+	switch httpCode {
+	case 400:
+		return grpc_codes.InvalidArgument
+	case 401:
+		return grpc_codes.Unauthenticated
+	case 403:
+		return grpc_codes.PermissionDenied
+	case 404:
+		return grpc_codes.NotFound
+	case 409:
+		return grpc_codes.AlreadyExists
+	case 429:
+		return grpc_codes.ResourceExhausted
+	case 499:
+		return grpc_codes.Canceled
+	case 500:
+		return grpc_codes.Internal
+	case 501:
+		return grpc_codes.Unimplemented
+	case 503:
+		return grpc_codes.Unavailable
+	case 504:
+		return grpc_codes.DeadlineExceeded
+	default:
+		return grpc_codes.Unknown
+	}
 }
