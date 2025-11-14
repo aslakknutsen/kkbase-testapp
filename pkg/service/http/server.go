@@ -126,6 +126,12 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				zap.String("message", msg),
 			)
 			panic(fmt.Sprintf("Config file crash: %s", msg))
+		} else if msg != "" {
+			// Log file read errors without crashing
+			s.telemetry.Logger.Warn("Failed to check config file for invalid content",
+				zap.String("file", beh.CrashIfFile.FilePath),
+				zap.String("error", msg),
+			)
 		}
 
 		// Check for panic injection (do this BEFORE error check)
