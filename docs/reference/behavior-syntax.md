@@ -293,6 +293,220 @@ Fatal: Config file contains invalid content - crashing as configured
   file=/config/app.conf matched_content=invalid
 ```
 
+## Error on Invalid Secret/Config File
+
+Return HTTP/gRPC errors when mounted files (Secrets or ConfigMaps) contain invalid content. Unlike `crash-if-file`, this behavior lets the service continue running while returning errors on requests.
+
+### Syntax
+
+```
+error-if-file=<file_path>:<invalid_content>:<error_code>
+```
+
+**File Path:** Absolute path to file (typically mounted via Secret or ConfigMap)
+
+**Invalid Content:** Semicolon-separated list of strings that trigger error
+
+**Error Code:** HTTP status code (optional, defaults to 401)
+
+### Examples
+
+**Single invalid string with default 401:**
+```
+error-if-file=/var/run/secrets/api-key:bad
+```
+
+**Single invalid string with custom code:**
+```
+error-if-file=/var/run/secrets/api-key:invalid:403
+```
+
+**Multiple invalid strings:**
+```
+error-if-file=/config/auth:bad;error;fail:401
+```
+
+**Combined with other behaviors:**
+```
+latency=100ms,error-if-file=/var/run/secrets/key:bad:401
+```
+
+### Environment Variable Configuration
+
+Set `ERROR_ON_FILE_CONTENT` to apply on all requests:
+
+```bash
+ERROR_ON_FILE_CONTENT="/var/run/secrets/api-key:invalid:401"
+```
+
+**Multiple files (pipe-separated):**
+```bash
+ERROR_ON_FILE_CONTENT="/var/run/secrets/key:bad:401|/config/auth:fail:403"
+```
+
+### Secret Mounting Scenario
+
+This behavior is designed for realistic Secret rotation and authentication testing:
+
+```yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: api-credentials
+type: Opaque
+stringData:
+  api-key: "valid_key_123"
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: myapp
+spec:
+  template:
+    spec:
+      containers:
+      - name: testservice
+        env:
+        - name: ERROR_ON_FILE_CONTENT
+          value: "/var/run/secrets/api-key:bad_credential:401"
+        volumeMounts:
+        - name: credentials
+          mountPath: /var/run/secrets
+          readOnly: true
+      volumes:
+      - name: credentials
+        secret:
+          secretName: api-credentials
+```
+
+**To trigger errors:**
+1. Update Secret: `api-key: "bad_credential"`
+2. Wait for kubelet sync (~60 seconds)
+3. Service returns 401 errors on all requests (but stays running)
+
+### Behavior Details
+
+**Check Timing:**
+- **Startup:** Validates syntax and logs if condition is met (service still starts)
+- **Per-Request:** Checked before each HTTP/gRPC request, returns error if matched
+
+**Match Logic:**
+- Uses simple substring matching
+- Any configured invalid string found in file triggers error
+- Case-sensitive
+
+**Error Handling:**
+- File read errors: Logged but don't return error (fail-safe)
+- Missing files: Logged but don't return error
+
+**HTTP Response:**
+- Returns configured HTTP status code (default: 401)
+- Response body includes validation failure message
+
+**gRPC Response:**
+- Maps HTTP codes to gRPC status codes:
+  - `400` → `InvalidArgument`
+  - `401` → `Unauthenticated`
+  - `403` → `PermissionDenied`
+  - `404` → `NotFound`
+  - `409` → `AlreadyExists`
+  - `429` → `ResourceExhausted`
+  - `500` → `Internal`
+  - `503` → `Unavailable`
+  - `504` → `DeadlineExceeded`
+  - Others → `Unknown`
+
+**Logging:**
+- Warning log level (service continues running)
+- Includes file path, matched content, and error code
+
+### Use Cases
+
+**Secret Rotation with Bad Credentials:**
+```bash
+# Scenario: Rotated secret contains invalid credential
+curl "/?behavior=error-if-file=/var/run/secrets/api-key:bad_credential:401"
+```
+
+**Database Connection String Validation:**
+```bash
+ERROR_ON_FILE_CONTENT="/config/db-connection:invalid_host:503"
+```
+
+**Multi-Environment Secret Validation:**
+```bash
+# Return 403 if production credentials in dev environment
+ERROR_ON_FILE_CONTENT="/var/run/secrets/env:production:403"
+```
+
+**API Key Validation:**
+```bash
+# Return 401 for revoked API keys
+error-if-file=/var/run/secrets/api-key:revoked;expired;invalid:401
+```
+
+**Complex Scenarios:**
+```bash
+# Combine with latency and other errors
+curl "/?behavior=latency=500ms,error-if-file=/var/run/secrets/key:bad:401,error=0.1"
+```
+
+### Runtime Injection
+
+**HTTP:**
+```bash
+curl "http://service:8080/?behavior=error-if-file=/var/run/secrets/key:bad:401"
+```
+
+**gRPC:**
+```go
+req := &pb.CallRequest{
+    Behavior: "error-if-file=/var/run/secrets/key:bad:401",
+}
+```
+
+**Header:**
+```bash
+curl -H "X-Behavior: error-if-file=/var/run/secrets/key:bad:401" http://service:8080/
+```
+
+### Observability
+
+Applied behaviors appear in response:
+
+```json
+{
+  "code": 401,
+  "body": "File validation failed: File /var/run/secrets/key contains invalid content: 'bad'",
+  "behaviors_applied": [
+    "error-if-file:/var/run/secrets/key:bad:401"
+  ]
+}
+```
+
+**Note:** Multiple invalid strings are separated by semicolons (`;`) to avoid conflicts with the comma-separated behavior syntax.
+
+**Log Output:**
+```
+Warn: File contains invalid content - returning error as configured
+  file=/var/run/secrets/api-key matched_content=bad error_code=401
+```
+
+### Comparison: error-if-file vs crash-if-file
+
+| Feature | error-if-file | crash-if-file |
+|---------|---------------|---------------|
+| **Service availability** | Stays running | Pod crashes |
+| **Error response** | Returns HTTP/gRPC error | N/A (crashes) |
+| **Default code** | 401 Unauthorized | N/A |
+| **Use case** | Authentication failures, bad credentials | Config errors, critical failures |
+| **Kubernetes impact** | Service degraded but available | Pod restart, potential downtime |
+| **Testing scenario** | Secret rotation with bad values | ConfigMap propagation bugs |
+
+**When to use:**
+- Use `error-if-file` for authentication/authorization failures where the service should stay up
+- Use `crash-if-file` for critical config errors where pod should restart
+
 ## CPU Behaviors
 
 Simulate CPU-intensive operations.

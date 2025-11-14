@@ -1617,3 +1617,435 @@ func TestMergeBehaviors_CrashIfFile(t *testing.T) {
 		t.Error("Error should be preserved from b2")
 	}
 }
+
+// TestParseErrorIfFile_SingleCondition tests parsing a single invalid content condition
+func TestParseErrorIfFile_SingleCondition(t *testing.T) {
+	result, err := parseErrorIfFile("/var/run/secrets/api-key:bad:401")
+	if err != nil {
+		t.Fatalf("parseErrorIfFile() failed: %v", err)
+	}
+
+	if result.FilePath != "/var/run/secrets/api-key" {
+		t.Errorf("FilePath: got %q, want %q", result.FilePath, "/var/run/secrets/api-key")
+	}
+
+	if len(result.InvalidContent) != 1 {
+		t.Fatalf("InvalidContent length: got %d, want 1", len(result.InvalidContent))
+	}
+
+	if result.InvalidContent[0] != "bad" {
+		t.Errorf("InvalidContent[0]: got %q, want %q", result.InvalidContent[0], "bad")
+	}
+
+	if result.ErrorCode != 401 {
+		t.Errorf("ErrorCode: got %d, want 401", result.ErrorCode)
+	}
+}
+
+// TestParseErrorIfFile_DefaultErrorCode tests parsing with default error code
+func TestParseErrorIfFile_DefaultErrorCode(t *testing.T) {
+	result, err := parseErrorIfFile("/var/run/secrets/api-key:invalid")
+	if err != nil {
+		t.Fatalf("parseErrorIfFile() failed: %v", err)
+	}
+
+	if result.ErrorCode != 401 {
+		t.Errorf("ErrorCode: got %d, want 401 (default)", result.ErrorCode)
+	}
+}
+
+// TestParseErrorIfFile_MultipleConditions tests parsing multiple invalid content conditions
+func TestParseErrorIfFile_MultipleConditions(t *testing.T) {
+	result, err := parseErrorIfFile("/config/auth:bad;error;fail:403")
+	if err != nil {
+		t.Fatalf("parseErrorIfFile() failed: %v", err)
+	}
+
+	if result.FilePath != "/config/auth" {
+		t.Errorf("FilePath: got %q, want %q", result.FilePath, "/config/auth")
+	}
+
+	expected := []string{"bad", "error", "fail"}
+	if len(result.InvalidContent) != len(expected) {
+		t.Fatalf("InvalidContent length: got %d, want %d", len(result.InvalidContent), len(expected))
+	}
+
+	for i, want := range expected {
+		if result.InvalidContent[i] != want {
+			t.Errorf("InvalidContent[%d]: got %q, want %q", i, result.InvalidContent[i], want)
+		}
+	}
+
+	if result.ErrorCode != 403 {
+		t.Errorf("ErrorCode: got %d, want 403", result.ErrorCode)
+	}
+}
+
+// TestParseErrorIfFile_InvalidFormat tests error handling for malformed input
+func TestParseErrorIfFile_InvalidFormat(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+	}{
+		{"missing colon", "/config/app"},
+		{"empty path", ":invalid:401"},
+		{"empty invalid content", "/config/app::401"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := parseErrorIfFile(tt.input)
+			if err == nil {
+				t.Errorf("parseErrorIfFile(%q) expected error, got nil", tt.input)
+			}
+		})
+	}
+}
+
+// TestParseBehavior_ErrorIfFile tests integration with Parse() function
+func TestParseBehavior_ErrorIfFile(t *testing.T) {
+	tests := []struct {
+		name          string
+		input         string
+		wantFilePath  string
+		wantContent   []string
+		wantErrorCode int
+	}{
+		{
+			name:          "single condition with code",
+			input:         "error-if-file=/var/run/secrets/key:bad:401",
+			wantFilePath:  "/var/run/secrets/key",
+			wantContent:   []string{"bad"},
+			wantErrorCode: 401,
+		},
+		{
+			name:          "single condition default code",
+			input:         "error-if-file=/var/run/secrets/key:invalid",
+			wantFilePath:  "/var/run/secrets/key",
+			wantContent:   []string{"invalid"},
+			wantErrorCode: 401,
+		},
+		{
+			name:          "multiple conditions with code",
+			input:         "error-if-file=/config/auth:bad;error:403",
+			wantFilePath:  "/config/auth",
+			wantContent:   []string{"bad", "error"},
+			wantErrorCode: 403,
+		},
+		{
+			name:          "combined with other behaviors",
+			input:         "latency=100ms,error-if-file=/config/db:fail:503",
+			wantFilePath:  "/config/db",
+			wantContent:   []string{"fail"},
+			wantErrorCode: 503,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			b, err := Parse(tt.input)
+			if err != nil {
+				t.Fatalf("Parse() failed: %v", err)
+			}
+
+			if b.ErrorIfFile == nil {
+				t.Fatal("ErrorIfFile is nil")
+			}
+
+			if b.ErrorIfFile.FilePath != tt.wantFilePath {
+				t.Errorf("FilePath: got %q, want %q", b.ErrorIfFile.FilePath, tt.wantFilePath)
+			}
+
+			if len(b.ErrorIfFile.InvalidContent) != len(tt.wantContent) {
+				t.Fatalf("InvalidContent length: got %d, want %d", len(b.ErrorIfFile.InvalidContent), len(tt.wantContent))
+			}
+
+			for i, want := range tt.wantContent {
+				if b.ErrorIfFile.InvalidContent[i] != want {
+					t.Errorf("InvalidContent[%d]: got %q, want %q", i, b.ErrorIfFile.InvalidContent[i], want)
+				}
+			}
+
+			if b.ErrorIfFile.ErrorCode != tt.wantErrorCode {
+				t.Errorf("ErrorCode: got %d, want %d", b.ErrorIfFile.ErrorCode, tt.wantErrorCode)
+			}
+		})
+	}
+}
+
+// TestShouldErrorOnFile_MatchFound tests that error is triggered when file contains invalid content
+func TestShouldErrorOnFile_MatchFound(t *testing.T) {
+	// Create temp file with invalid content
+	tmpFile, err := os.CreateTemp("", "test-secret-*.key")
+	if err != nil {
+		t.Fatalf("Failed to create temp file: %v", err)
+	}
+	defer os.Remove(tmpFile.Name())
+
+	if _, err := tmpFile.WriteString("bad_credential"); err != nil {
+		t.Fatalf("Failed to write to temp file: %v", err)
+	}
+	tmpFile.Close()
+
+	b := &Behavior{
+		ErrorIfFile: &ErrorIfFileBehavior{
+			FilePath:       tmpFile.Name(),
+			InvalidContent: []string{"bad_credential"},
+			ErrorCode:      401,
+		},
+	}
+
+	shouldErr, errCode, matched, msg := b.ShouldErrorOnFile()
+	if !shouldErr {
+		t.Error("Expected shouldErr to be true")
+	}
+	if errCode != 401 {
+		t.Errorf("ErrorCode: got %d, want 401", errCode)
+	}
+	if matched != "bad_credential" {
+		t.Errorf("Matched: got %q, want %q", matched, "bad_credential")
+	}
+	if !strings.Contains(msg, tmpFile.Name()) {
+		t.Errorf("Message should contain file path: %s", msg)
+	}
+	if !strings.Contains(msg, "bad_credential") {
+		t.Errorf("Message should contain matched content: %s", msg)
+	}
+}
+
+// TestShouldErrorOnFile_NoMatch tests that no error occurs when file is valid
+func TestShouldErrorOnFile_NoMatch(t *testing.T) {
+	// Create temp file with valid content
+	tmpFile, err := os.CreateTemp("", "test-secret-*.key")
+	if err != nil {
+		t.Fatalf("Failed to create temp file: %v", err)
+	}
+	defer os.Remove(tmpFile.Name())
+
+	if _, err := tmpFile.WriteString("valid_credential"); err != nil {
+		t.Fatalf("Failed to write to temp file: %v", err)
+	}
+	tmpFile.Close()
+
+	b := &Behavior{
+		ErrorIfFile: &ErrorIfFileBehavior{
+			FilePath:       tmpFile.Name(),
+			InvalidContent: []string{"bad", "invalid"},
+			ErrorCode:      401,
+		},
+	}
+
+	shouldErr, errCode, matched, msg := b.ShouldErrorOnFile()
+	if shouldErr {
+		t.Error("Expected shouldErr to be false")
+	}
+	if errCode != 0 {
+		t.Errorf("Expected error code 0, got %d", errCode)
+	}
+	if matched != "" {
+		t.Errorf("Expected empty matched string, got %q", matched)
+	}
+	if msg != "" {
+		t.Errorf("Expected empty message, got %q", msg)
+	}
+}
+
+// TestShouldErrorOnFile_FileNotFound tests graceful handling of missing file
+func TestShouldErrorOnFile_FileNotFound(t *testing.T) {
+	b := &Behavior{
+		ErrorIfFile: &ErrorIfFileBehavior{
+			FilePath:       "/nonexistent/secret.key",
+			InvalidContent: []string{"invalid"},
+			ErrorCode:      401,
+		},
+	}
+
+	shouldErr, errCode, matched, msg := b.ShouldErrorOnFile()
+	if shouldErr {
+		t.Error("Expected shouldErr to be false for missing file")
+	}
+	if errCode != 0 {
+		t.Errorf("Expected error code 0, got %d", errCode)
+	}
+	if matched != "" {
+		t.Errorf("Expected empty matched string, got %q", matched)
+	}
+	if !strings.Contains(msg, "failed to read file") {
+		t.Errorf("Expected error message about file read failure, got: %s", msg)
+	}
+}
+
+// TestShouldErrorOnFile_MultipleInvalidStrings tests checking multiple invalid strings
+func TestShouldErrorOnFile_MultipleInvalidStrings(t *testing.T) {
+	// Create temp file with one of the invalid strings
+	tmpFile, err := os.CreateTemp("", "test-secret-*.key")
+	if err != nil {
+		t.Fatalf("Failed to create temp file: %v", err)
+	}
+	defer os.Remove(tmpFile.Name())
+
+	if _, err := tmpFile.WriteString("credential:error"); err != nil {
+		t.Fatalf("Failed to write to temp file: %v", err)
+	}
+	tmpFile.Close()
+
+	b := &Behavior{
+		ErrorIfFile: &ErrorIfFileBehavior{
+			FilePath:       tmpFile.Name(),
+			InvalidContent: []string{"invalid", "error", "bad"},
+			ErrorCode:      403,
+		},
+	}
+
+	shouldErr, errCode, matched, msg := b.ShouldErrorOnFile()
+	if !shouldErr {
+		t.Error("Expected shouldErr to be true")
+	}
+	if errCode != 403 {
+		t.Errorf("ErrorCode: got %d, want 403", errCode)
+	}
+	if matched != "error" {
+		t.Errorf("Matched: got %q, want %q", matched, "error")
+	}
+	if !strings.Contains(msg, "error") {
+		t.Errorf("Message should contain matched content: %s", msg)
+	}
+}
+
+// TestBehavior_String_ErrorIfFile tests serialization of error-if-file behavior
+func TestBehavior_String_ErrorIfFile(t *testing.T) {
+	tests := []struct {
+		name     string
+		behavior *Behavior
+		want     string
+	}{
+		{
+			name: "single invalid content default code",
+			behavior: &Behavior{
+				ErrorIfFile: &ErrorIfFileBehavior{
+					FilePath:       "/var/run/secrets/key",
+					InvalidContent: []string{"invalid"},
+					ErrorCode:      401,
+				},
+			},
+			want: "error-if-file=/var/run/secrets/key:invalid",
+		},
+		{
+			name: "single invalid content custom code",
+			behavior: &Behavior{
+				ErrorIfFile: &ErrorIfFileBehavior{
+					FilePath:       "/config/auth",
+					InvalidContent: []string{"bad"},
+					ErrorCode:      403,
+				},
+			},
+			want: "error-if-file=/config/auth:bad:403",
+		},
+		{
+			name: "multiple invalid content",
+			behavior: &Behavior{
+				ErrorIfFile: &ErrorIfFileBehavior{
+					FilePath:       "/config/db.conf",
+					InvalidContent: []string{"bad", "error"},
+					ErrorCode:      503,
+				},
+			},
+			want: "error-if-file=/config/db.conf:bad;error:503",
+		},
+		{
+			name: "combined with latency",
+			behavior: &Behavior{
+				Latency: &LatencyBehavior{
+					Type:  "fixed",
+					Value: 100 * time.Millisecond,
+				},
+				ErrorIfFile: &ErrorIfFileBehavior{
+					FilePath:       "/etc/config",
+					InvalidContent: []string{"fail"},
+					ErrorCode:      500,
+				},
+			},
+			want: "latency=100ms,error-if-file=/etc/config:fail:500",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := tt.behavior.String()
+			if got != tt.want {
+				t.Errorf("String() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+// TestBehavior_GetAppliedBehaviors_ErrorIfFile tests that error-if-file appears in applied list
+func TestBehavior_GetAppliedBehaviors_ErrorIfFile(t *testing.T) {
+	b := &Behavior{
+		ErrorIfFile: &ErrorIfFileBehavior{
+			FilePath:       "/var/run/secrets/key",
+			InvalidContent: []string{"invalid", "bad"},
+			ErrorCode:      401,
+		},
+	}
+
+	applied := b.GetAppliedBehaviors()
+	if len(applied) != 1 {
+		t.Fatalf("Expected 1 applied behavior, got %d", len(applied))
+	}
+
+	expected := "error-if-file:/var/run/secrets/key:invalid;bad:401"
+	if applied[0] != expected {
+		t.Errorf("Applied[0]: got %q, want %q", applied[0], expected)
+	}
+}
+
+// TestMergeBehaviors_ErrorIfFile tests merging behaviors with error-if-file
+func TestMergeBehaviors_ErrorIfFile(t *testing.T) {
+	b1 := &Behavior{
+		Latency: &LatencyBehavior{
+			Type:  "fixed",
+			Value: 100 * time.Millisecond,
+		},
+		ErrorIfFile: &ErrorIfFileBehavior{
+			FilePath:       "/var/run/secrets/key1",
+			InvalidContent: []string{"invalid"},
+			ErrorCode:      401,
+		},
+		CustomParams: make(map[string]string),
+	}
+
+	b2 := &Behavior{
+		Error: &ErrorBehavior{
+			Rate: 503,
+			Prob: 0.5,
+		},
+		ErrorIfFile: &ErrorIfFileBehavior{
+			FilePath:       "/var/run/secrets/key2",
+			InvalidContent: []string{"bad"},
+			ErrorCode:      403,
+		},
+		CustomParams: make(map[string]string),
+	}
+
+	merged := mergeBehaviors(b1, b2)
+
+	// b2's ErrorIfFile should override b1's
+	if merged.ErrorIfFile == nil {
+		t.Fatal("merged.ErrorIfFile is nil")
+	}
+	if merged.ErrorIfFile.FilePath != "/var/run/secrets/key2" {
+		t.Errorf("FilePath: got %q, want %q", merged.ErrorIfFile.FilePath, "/var/run/secrets/key2")
+	}
+	if merged.ErrorIfFile.ErrorCode != 403 {
+		t.Errorf("ErrorCode: got %d, want 403", merged.ErrorIfFile.ErrorCode)
+	}
+
+	// Other behaviors should be preserved
+	if merged.Latency == nil {
+		t.Error("Latency should be preserved from b1")
+	}
+	if merged.Error == nil {
+		t.Error("Error should be preserved from b2")
+	}
+}

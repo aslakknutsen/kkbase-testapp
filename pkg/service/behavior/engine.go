@@ -20,6 +20,7 @@ type Behavior struct {
 	Memory       *MemoryBehavior
 	Panic        *PanicBehavior
 	CrashIfFile  *CrashIfFileBehavior
+	ErrorIfFile  *ErrorIfFileBehavior
 	CustomParams map[string]string
 }
 
@@ -117,6 +118,14 @@ func (b *Behavior) String() string {
 		parts = append(parts, crashStr)
 	}
 
+	if b.ErrorIfFile != nil {
+		errorStr := fmt.Sprintf("error-if-file=%s:%s", b.ErrorIfFile.FilePath, strings.Join(b.ErrorIfFile.InvalidContent, ";"))
+		if b.ErrorIfFile.ErrorCode != 401 {
+			errorStr += fmt.Sprintf(":%d", b.ErrorIfFile.ErrorCode)
+		}
+		parts = append(parts, errorStr)
+	}
+
 	if b.CPU != nil {
 		cpuStr := fmt.Sprintf("cpu=%s", b.CPU.Pattern)
 		if b.CPU.Duration > 0 {
@@ -200,6 +209,12 @@ func mergeBehaviors(b1, b2 *Behavior) *Behavior {
 		merged.CrashIfFile = b1.CrashIfFile
 	}
 
+	if b2.ErrorIfFile != nil {
+		merged.ErrorIfFile = b2.ErrorIfFile
+	} else if b1.ErrorIfFile != nil {
+		merged.ErrorIfFile = b1.ErrorIfFile
+	}
+
 	// Merge custom parameters (b2 overrides b1)
 	for k, v := range b1.CustomParams {
 		merged.CustomParams[k] = v
@@ -249,6 +264,13 @@ type PanicBehavior struct {
 type CrashIfFileBehavior struct {
 	FilePath       string   // Path to the file to check
 	InvalidContent []string // List of invalid strings that trigger crash
+}
+
+// ErrorIfFileBehavior returns error if specified file contains invalid content
+type ErrorIfFileBehavior struct {
+	FilePath       string   // Path to the file to check
+	InvalidContent []string // List of invalid strings that trigger error
+	ErrorCode      int      // HTTP status code to return (default: 401)
 }
 
 // Parse parses a behavior string into a Behavior struct
@@ -319,6 +341,13 @@ func Parse(behaviorStr string) (*Behavior, error) {
 				return nil, fmt.Errorf("invalid crash-if-file: %w", err)
 			}
 			b.CrashIfFile = crashIfFile
+
+		case "error-if-file":
+			errorIfFile, err := parseErrorIfFile(value)
+			if err != nil {
+				return nil, fmt.Errorf("invalid error-if-file: %w", err)
+			}
+			b.ErrorIfFile = errorIfFile
 
 		default:
 			b.CustomParams[key] = value
@@ -643,6 +672,68 @@ func parseCrashIfFile(value string) (*CrashIfFileBehavior, error) {
 	}, nil
 }
 
+// parseErrorIfFile parses error-if-file specifications
+// Format: "/path/to/file:invalid1;invalid2:code" or "/path/to/file:invalid1;invalid2"
+// Examples: "/var/run/secrets/api-key:bad:401", "/var/run/secrets/api-key:invalid" (defaults to 401)
+// Note: Uses semicolon to separate multiple invalid strings, optional error code at end
+func parseErrorIfFile(value string) (*ErrorIfFileBehavior, error) {
+	// Split by colon to get parts
+	parts := strings.Split(value, ":")
+	if len(parts) < 2 {
+		return nil, fmt.Errorf("invalid format: expected 'path:invalid_content' or 'path:invalid_content:code'")
+	}
+
+	filePath := strings.TrimSpace(parts[0])
+	if filePath == "" {
+		return nil, fmt.Errorf("file path cannot be empty")
+	}
+
+	// Default error code
+	errorCode := 401
+
+	// Determine if last part is an error code
+	var invalidContentStr string
+	if len(parts) >= 3 {
+		// Check if last part looks like an HTTP status code (3 digits)
+		lastPart := strings.TrimSpace(parts[len(parts)-1])
+		if code, err := strconv.Atoi(lastPart); err == nil && code >= 100 && code < 600 {
+			// It's an error code
+			errorCode = code
+			// Join all parts between first and last as invalid content
+			invalidContentStr = strings.Join(parts[1:len(parts)-1], ":")
+		} else {
+			// Not an error code, all remaining parts are invalid content
+			invalidContentStr = strings.Join(parts[1:], ":")
+		}
+	} else {
+		// Only 2 parts: path and invalid content
+		invalidContentStr = parts[1]
+	}
+
+	invalidContentStr = strings.TrimSpace(invalidContentStr)
+	if invalidContentStr == "" {
+		return nil, fmt.Errorf("invalid content list cannot be empty")
+	}
+
+	// Split invalid content by semicolon (to avoid conflict with behavior comma separator)
+	var invalidContent []string
+	for _, content := range strings.Split(invalidContentStr, ";") {
+		if trimmed := strings.TrimSpace(content); trimmed != "" {
+			invalidContent = append(invalidContent, trimmed)
+		}
+	}
+
+	if len(invalidContent) == 0 {
+		return nil, fmt.Errorf("at least one invalid content string required")
+	}
+
+	return &ErrorIfFileBehavior{
+		FilePath:       filePath,
+		InvalidContent: invalidContent,
+		ErrorCode:      errorCode,
+	}, nil
+}
+
 // parseCPU parses CPU behavior specifications
 // Examples: "spike", "spike:5s", "steady:10s:50"
 func parseCPU(value string) (*CPUBehavior, error) {
@@ -879,6 +970,31 @@ func (b *Behavior) ShouldCrashOnFile() (bool, string, string) {
 	return false, "", ""
 }
 
+// ShouldErrorOnFile checks if the configured file contains invalid content
+// Returns true if error should be returned, along with error code, matched content, and error message
+func (b *Behavior) ShouldErrorOnFile() (bool, int, string, string) {
+	if b.ErrorIfFile == nil {
+		return false, 0, "", ""
+	}
+
+	// Read the file
+	content, err := os.ReadFile(b.ErrorIfFile.FilePath)
+	if err != nil {
+		// File read error - don't error, just log
+		return false, 0, "", fmt.Sprintf("failed to read file %s: %v", b.ErrorIfFile.FilePath, err)
+	}
+
+	// Check if file contains any invalid strings
+	fileContent := string(content)
+	for _, invalidStr := range b.ErrorIfFile.InvalidContent {
+		if strings.Contains(fileContent, invalidStr) {
+			return true, b.ErrorIfFile.ErrorCode, invalidStr, fmt.Sprintf("File %s contains invalid content: '%s'", b.ErrorIfFile.FilePath, invalidStr)
+		}
+	}
+
+	return false, 0, "", ""
+}
+
 // applyCPU applies CPU load
 func (b *Behavior) applyCPU(ctx context.Context) {
 	go func() {
@@ -1050,6 +1166,9 @@ func (b *Behavior) GetAppliedBehaviors() []string {
 	}
 	if b.CrashIfFile != nil {
 		applied = append(applied, fmt.Sprintf("crash-if-file:%s:%s", b.CrashIfFile.FilePath, strings.Join(b.CrashIfFile.InvalidContent, ";")))
+	}
+	if b.ErrorIfFile != nil {
+		applied = append(applied, fmt.Sprintf("error-if-file:%s:%s:%d", b.ErrorIfFile.FilePath, strings.Join(b.ErrorIfFile.InvalidContent, ";"), b.ErrorIfFile.ErrorCode))
 	}
 
 	// Include custom parameters

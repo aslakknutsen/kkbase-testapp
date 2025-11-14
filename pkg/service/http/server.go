@@ -134,6 +134,33 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			)
 		}
 
+		// Check for error-if-file (do this BEFORE panic and error checks)
+		if shouldErr, errCode, matched, msg := beh.ShouldErrorOnFile(); shouldErr {
+			s.telemetry.Logger.Warn("File contains invalid content - returning error as configured",
+				zap.String("service", s.config.Name),
+				zap.String("file", beh.ErrorIfFile.FilePath),
+				zap.String("matched_content", matched),
+				zap.Int("error_code", errCode),
+				zap.String("message", msg),
+			)
+			now := time.Now()
+			resp.Code = int32(errCode)
+			resp.Body = fmt.Sprintf("File validation failed: %s", msg)
+			resp.BehaviorsApplied = beh.GetAppliedBehaviors()
+			resp.EndTime = now.Format(time.RFC3339Nano)
+			resp.Duration = now.Sub(start).String()
+
+			s.telemetry.RecordBehavior("error-if-file")
+			s.sendResponse(w, r, resp, errCode, span, start)
+			return
+		} else if msg != "" {
+			// Log file read errors without returning error
+			s.telemetry.Logger.Warn("Failed to check file for invalid content",
+				zap.String("file", beh.ErrorIfFile.FilePath),
+				zap.String("error", msg),
+			)
+		}
+
 		// Check for panic injection (do this BEFORE error check)
 		if beh.ShouldPanic() {
 			s.telemetry.Logger.Fatal("Panic behavior triggered - crashing pod",
