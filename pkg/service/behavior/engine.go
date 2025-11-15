@@ -15,15 +15,14 @@ import (
 
 // Behavior represents parsed behavior directives
 type Behavior struct {
-	Latency      *LatencyBehavior
-	Error        *ErrorBehavior
-	CPU          *CPUBehavior
-	Memory       *MemoryBehavior
-	Panic        *PanicBehavior
-	CrashIfFile  *CrashIfFileBehavior
-	ErrorIfFile  *ErrorIfFileBehavior
-	Disk         *DiskBehavior
-	CustomParams map[string]string
+	Latency     *LatencyBehavior
+	Error       *ErrorBehavior
+	CPU         *CPUBehavior
+	Memory      *MemoryBehavior
+	Panic       *PanicBehavior
+	CrashIfFile *CrashIfFileBehavior
+	ErrorIfFile *ErrorIfFileBehavior
+	Disk        *DiskBehavior
 }
 
 // ServiceBehavior represents a behavior targeted at a specific service
@@ -167,21 +166,12 @@ func (b *Behavior) String() string {
 		parts = append(parts, diskStr)
 	}
 
-	// Include custom parameters
-	if len(b.CustomParams) > 0 {
-		for key, value := range b.CustomParams {
-			parts = append(parts, fmt.Sprintf("%s=%s", key, value))
-		}
-	}
-
 	return strings.Join(parts, ",")
 }
 
 // mergeBehaviors combines two behaviors
 func mergeBehaviors(b1, b2 *Behavior) *Behavior {
-	merged := &Behavior{
-		CustomParams: make(map[string]string),
-	}
+	merged := &Behavior{}
 
 	if b2.Latency != nil {
 		merged.Latency = b2.Latency
@@ -229,14 +219,6 @@ func mergeBehaviors(b1, b2 *Behavior) *Behavior {
 		merged.Disk = b2.Disk
 	} else if b1.Disk != nil {
 		merged.Disk = b1.Disk
-	}
-
-	// Merge custom parameters (b2 overrides b1)
-	for k, v := range b1.CustomParams {
-		merged.CustomParams[k] = v
-	}
-	for k, v := range b2.CustomParams {
-		merged.CustomParams[k] = v
 	}
 
 	return merged
@@ -300,12 +282,10 @@ type ErrorIfFileBehavior struct {
 // Format: "latency=100ms,error=503:0.1,cpu=spike:5s,memory=leak-slow:10m"
 func Parse(behaviorStr string) (*Behavior, error) {
 	if behaviorStr == "" {
-		return &Behavior{CustomParams: make(map[string]string)}, nil
+		return &Behavior{}, nil
 	}
 
-	b := &Behavior{
-		CustomParams: make(map[string]string),
-	}
+	b := &Behavior{}
 
 	parts := strings.Split(behaviorStr, ",")
 	for _, part := range parts {
@@ -380,7 +360,7 @@ func Parse(behaviorStr string) (*Behavior, error) {
 			b.Disk = disk
 
 		default:
-			b.CustomParams[key] = value
+			return nil, fmt.Errorf("unknown behavior key: %s", key)
 		}
 	}
 
@@ -1327,13 +1307,6 @@ func (b *Behavior) GetAppliedBehaviors() []string {
 		diskStr := fmt.Sprintf("disk:fill:%s:%s:%s",
 			formatBytes(b.Disk.Size), b.Disk.Path, b.Disk.Duration)
 		applied = append(applied, diskStr)
-	}
-
-	// Include custom parameters
-	if len(b.CustomParams) > 0 {
-		for key, value := range b.CustomParams {
-			applied = append(applied, fmt.Sprintf("custom:%s=%s", key, value))
-		}
 	}
 
 	return applied

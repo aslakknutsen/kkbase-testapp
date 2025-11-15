@@ -653,14 +653,14 @@ func TestShouldError(t *testing.T) {
 	}{
 		{
 			name:           "50% error rate",
-			input:          "error=0.5,code=500",
+			input:          "error=500:0.5",
 			iterations:     1000,
 			expectedRate:   0.5,
 			toleranceRange: 0.1, // 10% tolerance
 		},
 		{
 			name:           "10% error rate",
-			input:          "error=0.1,code=503",
+			input:          "error=503:0.1",
 			iterations:     1000,
 			expectedRate:   0.1,
 			toleranceRange: 0.05,
@@ -787,11 +787,6 @@ func TestGetAppliedBehaviors(t *testing.T) {
 			input:    "memory=leak-slow",
 			expected: []string{"memory:leak-slow:10485760:10m0s"},
 		},
-		{
-			name:     "custom parameters",
-			input:    "latency=100ms,foo=bar,baz=qux",
-			expected: []string{"latency:fixed:100ms", "custom:foo=bar", "custom:baz=qux"},
-		},
 	}
 
 	for _, tt := range tests {
@@ -806,107 +801,9 @@ func TestGetAppliedBehaviors(t *testing.T) {
 				t.Fatalf("got %d behaviors, want %d\nGot: %v\nWant: %v", len(applied), len(tt.expected), applied, tt.expected)
 			}
 
-			// For custom params, order might vary (map iteration), so check existence
-			if tt.name == "custom parameters" {
-				expectedMap := make(map[string]bool)
-				for _, e := range tt.expected {
-					expectedMap[e] = true
-				}
-				for _, a := range applied {
-					if !expectedMap[a] {
-						t.Errorf("unexpected behavior: %s", a)
-					}
-				}
-			} else {
-				for i, want := range tt.expected {
-					if applied[i] != want {
-						t.Errorf("behavior[%d] = %s, want %s", i, applied[i], want)
-					}
-				}
-			}
-		})
-	}
-}
-
-// TestCustomParameters tests custom parameter parsing and serialization
-func TestCustomParameters(t *testing.T) {
-	tests := []struct {
-		name     string
-		input    string
-		validate func(t *testing.T, b *Behavior)
-	}{
-		{
-			name:  "single custom parameter",
-			input: "foo=bar",
-			validate: func(t *testing.T, b *Behavior) {
-				if len(b.CustomParams) != 1 {
-					t.Errorf("expected 1 custom param, got %d", len(b.CustomParams))
-				}
-				if b.CustomParams["foo"] != "bar" {
-					t.Errorf("expected foo=bar, got foo=%s", b.CustomParams["foo"])
-				}
-			},
-		},
-		{
-			name:  "multiple custom parameters",
-			input: "foo=bar,baz=qux",
-			validate: func(t *testing.T, b *Behavior) {
-				if len(b.CustomParams) != 2 {
-					t.Errorf("expected 2 custom params, got %d", len(b.CustomParams))
-				}
-				if b.CustomParams["foo"] != "bar" {
-					t.Errorf("expected foo=bar, got foo=%s", b.CustomParams["foo"])
-				}
-				if b.CustomParams["baz"] != "qux" {
-					t.Errorf("expected baz=qux, got baz=%s", b.CustomParams["baz"])
-				}
-			},
-		},
-		{
-			name:  "mixed standard and custom",
-			input: "latency=100ms,custom1=value1,error=0.5,custom2=value2",
-			validate: func(t *testing.T, b *Behavior) {
-				if b.Latency == nil {
-					t.Error("expected latency")
-				}
-				if b.Error == nil {
-					t.Error("expected error")
-				}
-				if len(b.CustomParams) != 2 {
-					t.Errorf("expected 2 custom params, got %d", len(b.CustomParams))
-				}
-				if b.CustomParams["custom1"] != "value1" {
-					t.Errorf("expected custom1=value1")
-				}
-				if b.CustomParams["custom2"] != "value2" {
-					t.Errorf("expected custom2=value2")
-				}
-			},
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			b, err := Parse(tt.input)
-			if err != nil {
-				t.Fatalf("Parse() failed: %v", err)
-			}
-			tt.validate(t, b)
-
-			// Test round-trip via String()
-			serialized := b.String()
-			b2, err := Parse(serialized)
-			if err != nil {
-				t.Fatalf("Round-trip Parse() failed: %v", err)
-			}
-
-			// Verify custom params survived round-trip
-			if len(b2.CustomParams) != len(b.CustomParams) {
-				t.Errorf("round-trip custom params count: got %d, want %d", len(b2.CustomParams), len(b.CustomParams))
-			}
-			for k, v := range b.CustomParams {
-				if b2.CustomParams[k] != v {
-					t.Errorf("round-trip custom param %s: got %s, want %s", k, b2.CustomParams[k], v)
+			for i, want := range tt.expected {
+				if applied[i] != want {
+					t.Errorf("behavior[%d] = %s, want %s", i, applied[i], want)
 				}
 			}
 		})
@@ -1584,7 +1481,6 @@ func TestMergeBehaviors_CrashIfFile(t *testing.T) {
 			FilePath:       "/config/app.conf",
 			InvalidContent: []string{"invalid"},
 		},
-		CustomParams: make(map[string]string),
 	}
 
 	b2 := &Behavior{
@@ -1596,7 +1492,6 @@ func TestMergeBehaviors_CrashIfFile(t *testing.T) {
 			FilePath:       "/config/db.conf",
 			InvalidContent: []string{"bad"},
 		},
-		CustomParams: make(map[string]string),
 	}
 
 	merged := mergeBehaviors(b1, b2)
@@ -2012,7 +1907,6 @@ func TestMergeBehaviors_ErrorIfFile(t *testing.T) {
 			InvalidContent: []string{"invalid"},
 			ErrorCode:      401,
 		},
-		CustomParams: make(map[string]string),
 	}
 
 	b2 := &Behavior{
@@ -2025,7 +1919,6 @@ func TestMergeBehaviors_ErrorIfFile(t *testing.T) {
 			InvalidContent: []string{"bad"},
 			ErrorCode:      403,
 		},
-		CustomParams: make(map[string]string),
 	}
 
 	merged := mergeBehaviors(b1, b2)
@@ -2255,7 +2148,6 @@ func TestDiskBehaviorMerge(t *testing.T) {
 			Path:     "/cache",
 			Duration: 10 * time.Minute,
 		},
-		CustomParams: make(map[string]string),
 	}
 
 	b2 := &Behavior{
@@ -2268,7 +2160,6 @@ func TestDiskBehaviorMerge(t *testing.T) {
 			Path:     "/data",
 			Duration: 5 * time.Minute,
 		},
-		CustomParams: make(map[string]string),
 	}
 
 	merged := mergeBehaviors(b1, b2)
