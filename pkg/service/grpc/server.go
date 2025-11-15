@@ -66,7 +66,7 @@ func (s *Server) Call(ctx context.Context, req *pb.CallRequest) (*pb.ServiceResp
 		behaviorStr = s.config.DefaultBehavior
 	}
 
-	var behaviorsApplied []string
+	var behaviorsApplied string
 	statusCode := 0 // 0 = OK in gRPC
 
 	behaviorChain, err := behavior.ParseChain(behaviorStr)
@@ -102,7 +102,7 @@ func (s *Server) Call(ctx context.Context, req *pb.CallRequest) (*pb.ServiceResp
 				)
 				
 				statusCode := 507 // HTTP 507 Insufficient Storage
-				behaviorsApplied = beh.GetAppliedBehaviors()
+				behaviorsApplied = beh.String()
 				
 				resp := s.buildResponse(ctx, start, statusCode, behaviorsApplied, nil)
 				resp.Body = fmt.Sprintf("Disk fill failed: %v", err)
@@ -146,7 +146,7 @@ func (s *Server) Call(ctx context.Context, req *pb.CallRequest) (*pb.ServiceResp
 			)
 			
 			grpcCode := httpToGRPCCode(errCode)
-			behaviorsApplied = beh.GetAppliedBehaviors()
+			behaviorsApplied = beh.String()
 			
 			resp := s.buildResponse(ctx, start, errCode, behaviorsApplied, nil)
 			resp.Body = fmt.Sprintf("File validation failed: %s", msg)
@@ -179,7 +179,7 @@ func (s *Server) Call(ctx context.Context, req *pb.CallRequest) (*pb.ServiceResp
 		// Check for error injection
 		if shouldErr, errCode := beh.ShouldError(); shouldErr {
 			statusCode = errCode
-			behaviorsApplied = beh.GetAppliedBehaviors()
+			behaviorsApplied = beh.String()
 
 			resp := s.buildResponse(ctx, start, statusCode, behaviorsApplied, nil)
 			resp.Body = fmt.Sprintf("Injected error: %d", errCode)
@@ -196,11 +196,11 @@ func (s *Server) Call(ctx context.Context, req *pb.CallRequest) (*pb.ServiceResp
 			return resp, nil
 		}
 
-		behaviorsApplied = beh.GetAppliedBehaviors()
+		behaviorsApplied = beh.String()
 
 		// Record applied behaviors
-		for _, applied := range behaviorsApplied {
-			s.telemetry.RecordBehavior(applied)
+		if behaviorsApplied != "" {
+			s.telemetry.RecordBehavior(behaviorsApplied)
 		}
 	}
 
@@ -280,7 +280,7 @@ func (s *Server) resultToUpstreamCall(result client.Result) *pb.UpstreamCall {
 }
 
 // buildResponse constructs the gRPC response
-func (s *Server) buildResponse(ctx context.Context, start time.Time, code int, behaviorsApplied []string, upstreamCalls []*pb.UpstreamCall) *pb.ServiceResponse {
+func (s *Server) buildResponse(ctx context.Context, start time.Time, code int, behaviorsApplied string, upstreamCalls []*pb.UpstreamCall) *pb.ServiceResponse {
 	now := time.Now()
 
 	resp := &pb.ServiceResponse{

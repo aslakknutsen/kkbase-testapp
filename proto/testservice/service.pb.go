@@ -103,8 +103,8 @@ type ServiceResponse struct {
 	SpanId  string `protobuf:"bytes,8,opt,name=span_id,json=spanId,proto3" json:"span_id,omitempty"`
 	// Upstream calls made (recursive)
 	UpstreamCalls []*UpstreamCall `protobuf:"bytes,9,rep,name=upstream_calls,json=upstreamCalls,proto3" json:"upstream_calls,omitempty"`
-	// Applied behaviors
-	BehaviorsApplied []string `protobuf:"bytes,10,rep,name=behaviors_applied,json=behaviorsApplied,proto3" json:"behaviors_applied,omitempty"`
+	// Applied behaviors (comma-separated string)
+	BehaviorsApplied string `protobuf:"bytes,10,opt,name=behaviors_applied,json=behaviorsApplied,proto3" json:"behaviors_applied,omitempty"`
 	// URL/method that was called (for gRPC, the full method name)
 	Url           string `protobuf:"bytes,11,opt,name=url,proto3" json:"url,omitempty"`
 	unknownFields protoimpl.UnknownFields
@@ -204,11 +204,11 @@ func (x *ServiceResponse) GetUpstreamCalls() []*UpstreamCall {
 	return nil
 }
 
-func (x *ServiceResponse) GetBehaviorsApplied() []string {
+func (x *ServiceResponse) GetBehaviorsApplied() string {
 	if x != nil {
 		return x.BehaviorsApplied
 	}
-	return nil
+	return ""
 }
 
 func (x *ServiceResponse) GetUrl() string {
@@ -314,8 +314,8 @@ type UpstreamCall struct {
 	Error    string                 `protobuf:"bytes,6,opt,name=error,proto3" json:"error,omitempty"`
 	// Nested upstream calls
 	UpstreamCalls []*UpstreamCall `protobuf:"bytes,7,rep,name=upstream_calls,json=upstreamCalls,proto3" json:"upstream_calls,omitempty"`
-	// Applied behaviors
-	BehaviorsApplied []string `protobuf:"bytes,8,rep,name=behaviors_applied,json=behaviorsApplied,proto3" json:"behaviors_applied,omitempty"`
+	// Applied behaviors (comma-separated string)
+	BehaviorsApplied string `protobuf:"bytes,8,opt,name=behaviors_applied,json=behaviorsApplied,proto3" json:"behaviors_applied,omitempty"`
 	unknownFields    protoimpl.UnknownFields
 	sizeCache        protoimpl.SizeCache
 }
@@ -399,11 +399,11 @@ func (x *UpstreamCall) GetUpstreamCalls() []*UpstreamCall {
 	return nil
 }
 
-func (x *UpstreamCall) GetBehaviorsApplied() []string {
+func (x *UpstreamCall) GetBehaviorsApplied() string {
 	if x != nil {
 		return x.BehaviorsApplied
 	}
-	return nil
+	return ""
 }
 
 var File_proto_testservice_service_proto protoreflect.FileDescriptor
@@ -430,7 +430,7 @@ const file_proto_testservice_service_proto_rawDesc = "" +
 	"\aspan_id\x18\b \x01(\tR\x06spanId\x12@\n" +
 	"\x0eupstream_calls\x18\t \x03(\v2\x19.testservice.UpstreamCallR\rupstreamCalls\x12+\n" +
 	"\x11behaviors_applied\x18\n" +
-	" \x03(\tR\x10behaviorsApplied\x12\x10\n" +
+	" \x01(\tR\x10behaviorsApplied\x12\x10\n" +
 	"\x03url\x18\v \x01(\tR\x03url\"\x9b\x01\n" +
 	"\vServiceInfo\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12\x18\n" +
@@ -447,7 +447,7 @@ const file_proto_testservice_service_proto_rawDesc = "" +
 	"\x04code\x18\x05 \x01(\x05R\x04code\x12\x14\n" +
 	"\x05error\x18\x06 \x01(\tR\x05error\x12@\n" +
 	"\x0eupstream_calls\x18\a \x03(\v2\x19.testservice.UpstreamCallR\rupstreamCalls\x12+\n" +
-	"\x11behaviors_applied\x18\b \x03(\tR\x10behaviorsApplied2M\n" +
+	"\x11behaviors_applied\x18\b \x01(\tR\x10behaviorsApplied2M\n" +
 	"\vTestService\x12>\n" +
 	"\x04Call\x12\x18.testservice.CallRequest\x1a\x1c.testservice.ServiceResponseB5Z3github.com/kagenti/kkbase/testapp/proto/testserviceb\x06proto3"
 

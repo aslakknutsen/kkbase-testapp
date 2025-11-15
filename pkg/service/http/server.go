@@ -127,12 +127,12 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 					zap.String("path", beh.Disk.Path),
 					zap.Int64("size", beh.Disk.Size),
 				)
-				now := time.Now()
-				resp.Code = 507
-				resp.Body = fmt.Sprintf("Disk fill failed: %v", err)
-				resp.BehaviorsApplied = beh.GetAppliedBehaviors()
-				resp.EndTime = now.Format(time.RFC3339Nano)
-				resp.Duration = now.Sub(start).String()
+			now := time.Now()
+			resp.Code = 507
+			resp.Body = fmt.Sprintf("Disk fill failed: %v", err)
+			resp.BehaviorsApplied = beh.String()
+			resp.EndTime = now.Format(time.RFC3339Nano)
+			resp.Duration = now.Sub(start).String()
 
 				s.telemetry.RecordBehavior("disk-fill-failed")
 				s.sendResponse(w, r, resp, 507, span, start)
@@ -169,7 +169,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			now := time.Now()
 			resp.Code = int32(errCode)
 			resp.Body = fmt.Sprintf("File validation failed: %s", msg)
-			resp.BehaviorsApplied = beh.GetAppliedBehaviors()
+			resp.BehaviorsApplied = beh.String()
 			resp.EndTime = now.Format(time.RFC3339Nano)
 			resp.Duration = now.Sub(start).String()
 
@@ -198,7 +198,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			now := time.Now()
 			resp.Code = int32(errCode)
 			resp.Body = fmt.Sprintf("Injected error: %d", errCode)
-			resp.BehaviorsApplied = beh.GetAppliedBehaviors()
+			resp.BehaviorsApplied = beh.String()
 			resp.EndTime = now.Format(time.RFC3339Nano)
 			resp.Duration = now.Sub(start).String()
 
@@ -207,11 +207,11 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		resp.BehaviorsApplied = beh.GetAppliedBehaviors()
+		resp.BehaviorsApplied = beh.String()
 
 		// Record applied behaviors
-		for _, applied := range resp.BehaviorsApplied {
-			s.telemetry.RecordBehavior(applied)
+		if resp.BehaviorsApplied != "" {
+			s.telemetry.RecordBehavior(resp.BehaviorsApplied)
 		}
 	}
 

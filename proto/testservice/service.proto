@@ -44,8 +44,8 @@ message ServiceResponse {
   // Upstream calls made (recursive)
   repeated UpstreamCall upstream_calls = 9;
   
-  // Applied behaviors
-  repeated string behaviors_applied = 10;
+  // Applied behaviors (comma-separated string)
+  string behaviors_applied = 10;
   
   // URL/method that was called (for gRPC, the full method name)
   string url = 11;
@@ -73,7 +73,7 @@ message UpstreamCall {
   // Nested upstream calls
   repeated UpstreamCall upstream_calls = 7;
   
-  // Applied behaviors
-  repeated string behaviors_applied = 8;
+  // Applied behaviors (comma-separated string)
+  string behaviors_applied = 8;
 }
 

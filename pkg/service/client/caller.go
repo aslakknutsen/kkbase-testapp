@@ -32,7 +32,7 @@ type Result struct {
 	Duration         time.Duration
 	Code             int
 	Error            string
-	BehaviorsApplied []string
+	BehaviorsApplied string
 	UpstreamCalls    []Result
 }
 
@@ -310,10 +310,7 @@ func convertUpstreamCalls(pbCalls []*pb.UpstreamCall) []Result {
 }
 
 // convertBehaviorsApplied extracts behaviors_applied from protobuf UpstreamCall
-func convertBehaviorsApplied(uc *pb.UpstreamCall) []string {
-	if uc.BehaviorsApplied == nil {
-		return []string{}
-	}
+func convertBehaviorsApplied(uc *pb.UpstreamCall) string {
 	return uc.BehaviorsApplied
 }
 
