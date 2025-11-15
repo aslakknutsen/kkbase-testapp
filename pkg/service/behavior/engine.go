@@ -6,6 +6,7 @@ import (
 	"math"
 	"math/rand"
 	"os"
+	"path/filepath"
 	"runtime"
 	"strconv"
 	"strings"
@@ -21,6 +22,7 @@ type Behavior struct {
 	Panic        *PanicBehavior
 	CrashIfFile  *CrashIfFileBehavior
 	ErrorIfFile  *ErrorIfFileBehavior
+	Disk         *DiskBehavior
 	CustomParams map[string]string
 }
 
@@ -157,6 +159,14 @@ func (b *Behavior) String() string {
 		parts = append(parts, memStr)
 	}
 
+	if b.Disk != nil {
+		diskStr := fmt.Sprintf("disk=fill:%s:%s", formatBytes(b.Disk.Size), b.Disk.Path)
+		if b.Disk.Duration != 10*time.Minute {
+			diskStr += fmt.Sprintf(":%s", b.Disk.Duration)
+		}
+		parts = append(parts, diskStr)
+	}
+
 	// Include custom parameters
 	if len(b.CustomParams) > 0 {
 		for key, value := range b.CustomParams {
@@ -215,6 +225,12 @@ func mergeBehaviors(b1, b2 *Behavior) *Behavior {
 		merged.ErrorIfFile = b1.ErrorIfFile
 	}
 
+	if b2.Disk != nil {
+		merged.Disk = b2.Disk
+	} else if b1.Disk != nil {
+		merged.Disk = b1.Disk
+	}
+
 	// Merge custom parameters (b2 overrides b1)
 	for k, v := range b1.CustomParams {
 		merged.CustomParams[k] = v
@@ -253,6 +269,13 @@ type MemoryBehavior struct {
 	Amount     int64  // Bytes to allocate
 	Duration   time.Duration
 	Percentage int // If >0, use percentage of container limit instead of Amount
+}
+
+// DiskBehavior controls disk space allocation
+type DiskBehavior struct {
+	Size     int64         // Bytes to allocate
+	Path     string        // Directory to fill
+	Duration time.Duration // How long to hold allocation
 }
 
 // PanicBehavior controls pod crash/panic
@@ -348,6 +371,13 @@ func Parse(behaviorStr string) (*Behavior, error) {
 				return nil, fmt.Errorf("invalid error-if-file: %w", err)
 			}
 			b.ErrorIfFile = errorIfFile
+
+		case "disk":
+			disk, err := parseDisk(value)
+			if err != nil {
+				return nil, fmt.Errorf("invalid disk: %w", err)
+			}
+			b.Disk = disk
 
 		default:
 			b.CustomParams[key] = value
@@ -877,6 +907,46 @@ func parseMemory(value string) (*MemoryBehavior, error) {
 	return mb, nil
 }
 
+// parseDisk parses disk behavior specifications
+// Format: disk=fill:<size>:<path>:<duration>
+// Examples: "fill:500Mi:/cache:10m", "fill:1Gi:/data"
+func parseDisk(value string) (*DiskBehavior, error) {
+	parts := strings.Split(value, ":")
+
+	// Must start with "fill"
+	if len(parts) < 3 || parts[0] != "fill" {
+		return nil, fmt.Errorf("invalid format: expected 'fill:<size>:<path>[:<duration>]'")
+	}
+
+	// Parse size
+	size, err := parseBytes(parts[1])
+	if err != nil {
+		return nil, fmt.Errorf("invalid size: %w", err)
+	}
+
+	// Get path
+	path := parts[2]
+	if path == "" {
+		return nil, fmt.Errorf("path cannot be empty")
+	}
+
+	// Parse optional duration (default: 10m)
+	duration := 10 * time.Minute
+	if len(parts) > 3 {
+		d, err := time.ParseDuration(parts[3])
+		if err != nil {
+			return nil, fmt.Errorf("invalid duration: %w", err)
+		}
+		duration = d
+	}
+
+	return &DiskBehavior{
+		Size:     size,
+		Path:     path,
+		Duration: duration,
+	}, nil
+}
+
 // Apply applies the behavior to the current request
 func (b *Behavior) Apply(ctx context.Context) error {
 	if b.Latency != nil {
@@ -1125,6 +1195,89 @@ func (b *Behavior) applyMemory(ctx context.Context) {
 	}()
 }
 
+// ApplyDisk fills disk space with a file
+// Returns error immediately if file creation fails (e.g., disk full)
+// Otherwise spawns background goroutine to hold allocation for duration
+func (b *Behavior) ApplyDisk(ctx context.Context, traceID string) error {
+	if b.Disk == nil {
+		return nil
+	}
+
+	// Generate unique filename with trace ID
+	filename := generateDiskFillFilename(b.Disk.Path, traceID)
+
+	// Create and fill file synchronously to detect errors before returning
+	if err := createDiskFillFile(filename, b.Disk.Size); err != nil {
+		return err // Return error immediately (will be 507 if ENOSPC)
+	}
+
+	// File created successfully, now hold it in background
+	go func() {
+		// Hold for duration
+		select {
+		case <-ctx.Done():
+			// Context cancelled, cleanup and return
+			os.Remove(filename)
+			return
+		case <-time.After(b.Disk.Duration):
+			// Duration elapsed, cleanup
+			os.Remove(filename)
+		}
+	}()
+
+	return nil
+}
+
+// generateDiskFillFilename creates a unique filename for disk fill
+// Format: .testservice-fill-<traceID>-<random>.dat
+func generateDiskFillFilename(path, traceID string) string {
+	// Generate random suffix (8 hex chars)
+	randSuffix := fmt.Sprintf("%08x", rand.Uint32())
+
+	// Truncate trace ID if needed (use last 16 chars for readability)
+	shortTraceID := traceID
+	if len(traceID) > 16 {
+		shortTraceID = traceID[len(traceID)-16:]
+	}
+
+	filename := fmt.Sprintf(".testservice-fill-%s-%s.dat", shortTraceID, randSuffix)
+	return filepath.Join(path, filename)
+}
+
+// createDiskFillFile creates a file of specified size
+// Uses sparse file technique (seek + write) for fast allocation
+func createDiskFillFile(filename string, size int64) error {
+	// Check if directory exists
+	dir := filepath.Dir(filename)
+	if _, err := os.Stat(dir); os.IsNotExist(err) {
+		return fmt.Errorf("directory does not exist: %s", dir)
+	}
+
+	// Create file
+	f, err := os.Create(filename)
+	if err != nil {
+		return fmt.Errorf("failed to create file: %w", err)
+	}
+	defer f.Close()
+
+	// Allocate space by seeking to size-1 and writing a byte
+	// This creates a sparse file on most filesystems
+	if _, err := f.Seek(size-1, 0); err != nil {
+		return fmt.Errorf("failed to seek: %w", err)
+	}
+
+	if _, err := f.Write([]byte{0}); err != nil {
+		return fmt.Errorf("failed to write: %w", err)
+	}
+
+	// Sync to ensure space is actually allocated
+	if err := f.Sync(); err != nil {
+		return fmt.Errorf("failed to sync: %w", err)
+	}
+
+	return nil
+}
+
 // GetAppliedBehaviors returns a list of behaviors that were applied
 func (b *Behavior) GetAppliedBehaviors() []string {
 	var applied []string
@@ -1169,6 +1322,11 @@ func (b *Behavior) GetAppliedBehaviors() []string {
 	}
 	if b.ErrorIfFile != nil {
 		applied = append(applied, fmt.Sprintf("error-if-file:%s:%s:%d", b.ErrorIfFile.FilePath, strings.Join(b.ErrorIfFile.InvalidContent, ";"), b.ErrorIfFile.ErrorCode))
+	}
+	if b.Disk != nil {
+		diskStr := fmt.Sprintf("disk:fill:%s:%s:%s",
+			formatBytes(b.Disk.Size), b.Disk.Path, b.Disk.Duration)
+		applied = append(applied, diskStr)
 	}
 
 	// Include custom parameters

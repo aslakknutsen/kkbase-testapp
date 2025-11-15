@@ -2049,3 +2049,422 @@ func TestMergeBehaviors_ErrorIfFile(t *testing.T) {
 		t.Error("Error should be preserved from b2")
 	}
 }
+
+// TestParseDisk tests disk behavior parsing
+func TestParseDisk(t *testing.T) {
+	tests := []struct {
+		name      string
+		input     string
+		wantError bool
+		validate  func(t *testing.T, d *DiskBehavior)
+	}{
+		{
+			name:  "valid disk fill with all params",
+			input: "fill:500Mi:/cache:10m",
+			validate: func(t *testing.T, d *DiskBehavior) {
+				if d.Size != 500*1024*1024 {
+					t.Errorf("Size = %d, want %d", d.Size, 500*1024*1024)
+				}
+				if d.Path != "/cache" {
+					t.Errorf("Path = %s, want /cache", d.Path)
+				}
+				if d.Duration != 10*time.Minute {
+					t.Errorf("Duration = %v, want 10m", d.Duration)
+				}
+			},
+		},
+		{
+			name:  "valid disk fill with default duration",
+			input: "fill:1Gi:/data",
+			validate: func(t *testing.T, d *DiskBehavior) {
+				if d.Size != 1024*1024*1024 {
+					t.Errorf("Size = %d, want %d", d.Size, 1024*1024*1024)
+				}
+				if d.Path != "/data" {
+					t.Errorf("Path = %s, want /data", d.Path)
+				}
+				if d.Duration != 10*time.Minute {
+					t.Errorf("Duration = %v, want 10m (default)", d.Duration)
+				}
+			},
+		},
+		{
+			name:  "valid disk fill with custom duration",
+			input: "fill:100Mi:/tmp:5m",
+			validate: func(t *testing.T, d *DiskBehavior) {
+				if d.Size != 100*1024*1024 {
+					t.Errorf("Size = %d, want %d", d.Size, 100*1024*1024)
+				}
+				if d.Path != "/tmp" {
+					t.Errorf("Path = %s, want /tmp", d.Path)
+				}
+				if d.Duration != 5*time.Minute {
+					t.Errorf("Duration = %v, want 5m", d.Duration)
+				}
+			},
+		},
+		{
+			name:      "invalid format - missing fill prefix",
+			input:     "500Mi:/cache:10m",
+			wantError: true,
+		},
+		{
+			name:      "invalid format - missing size",
+			input:     "fill:/cache",
+			wantError: true,
+		},
+		{
+			name:      "invalid size",
+			input:     "fill:invalid:/cache:10m",
+			wantError: true,
+		},
+		{
+			name:      "invalid duration",
+			input:     "fill:500Mi:/cache:invalid",
+			wantError: true,
+		},
+		{
+			name:      "empty path",
+			input:     "fill:500Mi::10m",
+			wantError: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			d, err := parseDisk(tt.input)
+			if tt.wantError {
+				if err == nil {
+					t.Error("expected error but got none")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if tt.validate != nil {
+				tt.validate(t, d)
+			}
+		})
+	}
+}
+
+// TestDiskBehaviorString tests disk behavior serialization
+func TestDiskBehaviorString(t *testing.T) {
+	tests := []struct {
+		name     string
+		behavior *Behavior
+		want     string
+	}{
+		{
+			name: "disk with default duration",
+			behavior: &Behavior{
+				Disk: &DiskBehavior{
+					Size:     500 * 1024 * 1024,
+					Path:     "/cache",
+					Duration: 10 * time.Minute,
+				},
+			},
+			want: "disk=fill:500Mi:/cache",
+		},
+		{
+			name: "disk with custom duration",
+			behavior: &Behavior{
+				Disk: &DiskBehavior{
+					Size:     1024 * 1024 * 1024,
+					Path:     "/data",
+					Duration: 5 * time.Minute,
+				},
+			},
+			want: "disk=fill:1Gi:/data:5m0s",
+		},
+		{
+			name: "disk combined with latency",
+			behavior: &Behavior{
+				Latency: &LatencyBehavior{
+					Type:  "fixed",
+					Value: 100 * time.Millisecond,
+				},
+				Disk: &DiskBehavior{
+					Size:     100 * 1024 * 1024,
+					Path:     "/tmp",
+					Duration: 2 * time.Minute,
+				},
+			},
+			want: "latency=100ms,disk=fill:100Mi:/tmp:2m0s",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := tt.behavior.String()
+			if got != tt.want {
+				t.Errorf("String() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+// TestDiskBehaviorRoundTrip tests parsing and serialization
+func TestDiskBehaviorRoundTrip(t *testing.T) {
+	tests := []string{
+		"disk=fill:500Mi:/cache:10m",
+		"disk=fill:1Gi:/data",
+		"latency=100ms,disk=fill:100Mi:/tmp:5m",
+	}
+
+	for _, input := range tests {
+		t.Run(input, func(t *testing.T) {
+			b, err := Parse(input)
+			if err != nil {
+				t.Fatalf("Parse() error = %v", err)
+			}
+
+			output := b.String()
+			b2, err := Parse(output)
+			if err != nil {
+				t.Fatalf("Parse() round-trip error = %v", err)
+			}
+
+			// Compare disk behaviors
+			if b.Disk != nil && b2.Disk != nil {
+				if b.Disk.Size != b2.Disk.Size {
+					t.Errorf("Size mismatch: %d != %d", b.Disk.Size, b2.Disk.Size)
+				}
+				if b.Disk.Path != b2.Disk.Path {
+					t.Errorf("Path mismatch: %s != %s", b.Disk.Path, b2.Disk.Path)
+				}
+				// Allow duration to be serialized with units
+				if b.Disk.Duration.Truncate(time.Second) != b2.Disk.Duration.Truncate(time.Second) {
+					t.Errorf("Duration mismatch: %v != %v", b.Disk.Duration, b2.Disk.Duration)
+				}
+			}
+		})
+	}
+}
+
+// TestDiskBehaviorMerge tests behavior merging
+func TestDiskBehaviorMerge(t *testing.T) {
+	b1 := &Behavior{
+		Latency: &LatencyBehavior{
+			Type:  "fixed",
+			Value: 100 * time.Millisecond,
+		},
+		Disk: &DiskBehavior{
+			Size:     500 * 1024 * 1024,
+			Path:     "/cache",
+			Duration: 10 * time.Minute,
+		},
+		CustomParams: make(map[string]string),
+	}
+
+	b2 := &Behavior{
+		Error: &ErrorBehavior{
+			Rate: 503,
+			Prob: 0.5,
+		},
+		Disk: &DiskBehavior{
+			Size:     1024 * 1024 * 1024,
+			Path:     "/data",
+			Duration: 5 * time.Minute,
+		},
+		CustomParams: make(map[string]string),
+	}
+
+	merged := mergeBehaviors(b1, b2)
+
+	// b2's Disk should override b1's
+	if merged.Disk == nil {
+		t.Fatal("merged.Disk is nil")
+	}
+	if merged.Disk.Size != 1024*1024*1024 {
+		t.Errorf("Size: got %d, want %d", merged.Disk.Size, 1024*1024*1024)
+	}
+	if merged.Disk.Path != "/data" {
+		t.Errorf("Path: got %s, want /data", merged.Disk.Path)
+	}
+	if merged.Disk.Duration != 5*time.Minute {
+		t.Errorf("Duration: got %v, want 5m", merged.Disk.Duration)
+	}
+
+	// Other behaviors should be preserved
+	if merged.Latency == nil {
+		t.Error("Latency should be preserved from b1")
+	}
+	if merged.Error == nil {
+		t.Error("Error should be preserved from b2")
+	}
+}
+
+// TestApplyDisk tests disk fill file creation and cleanup
+func TestApplyDisk(t *testing.T) {
+	// Create temporary directory for testing
+	tmpDir := t.TempDir()
+
+	b := &Behavior{
+		Disk: &DiskBehavior{
+			Size:     1024 * 1024, // 1Mi
+			Path:     tmpDir,
+			Duration: 100 * time.Millisecond, // Short duration for test
+		},
+	}
+
+	ctx := context.Background()
+	traceID := "test-trace-id-123"
+
+	// Apply disk behavior
+	err := b.ApplyDisk(ctx, traceID)
+	if err != nil {
+		t.Fatalf("ApplyDisk() error = %v", err)
+	}
+
+	// Wait a bit for goroutine to create file
+	time.Sleep(50 * time.Millisecond)
+
+	// Check that file was created
+	files, err := os.ReadDir(tmpDir)
+	if err != nil {
+		t.Fatalf("ReadDir() error = %v", err)
+	}
+
+	if len(files) == 0 {
+		t.Fatal("Expected file to be created, but directory is empty")
+	}
+
+	// Verify file has correct size
+	filePath := tmpDir + "/" + files[0].Name()
+	info, err := os.Stat(filePath)
+	if err != nil {
+		t.Fatalf("Stat() error = %v", err)
+	}
+
+	if info.Size() != 1024*1024 {
+		t.Errorf("File size = %d, want %d", info.Size(), 1024*1024)
+	}
+
+	// Wait for cleanup
+	time.Sleep(150 * time.Millisecond)
+
+	// Check that file was cleaned up
+	files, err = os.ReadDir(tmpDir)
+	if err != nil {
+		t.Fatalf("ReadDir() error = %v", err)
+	}
+
+	if len(files) != 0 {
+		t.Errorf("Expected file to be cleaned up, but found %d files", len(files))
+	}
+}
+
+// TestDiskFillFilename tests filename generation
+func TestDiskFillFilename(t *testing.T) {
+	tests := []struct {
+		name    string
+		path    string
+		traceID string
+	}{
+		{
+			name:    "short trace ID",
+			path:    "/cache",
+			traceID: "abc123",
+		},
+		{
+			name:    "long trace ID",
+			path:    "/tmp",
+			traceID: "0123456789abcdef0123456789abcdef",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			filename := generateDiskFillFilename(tt.path, tt.traceID)
+
+			// Check that filename starts with path
+			if !strings.HasPrefix(filename, tt.path) {
+				t.Errorf("Filename %q does not start with path %q", filename, tt.path)
+			}
+
+			// Check that filename contains trace ID prefix (last 16 chars)
+			expectedPrefix := tt.traceID
+			if len(tt.traceID) > 16 {
+				expectedPrefix = tt.traceID[len(tt.traceID)-16:]
+			}
+			if !strings.Contains(filename, expectedPrefix) {
+				t.Errorf("Filename %q does not contain trace ID prefix %q", filename, expectedPrefix)
+			}
+
+			// Check that filename has .dat extension
+			if !strings.HasSuffix(filename, ".dat") {
+				t.Errorf("Filename %q does not have .dat extension", filename)
+			}
+
+			// Check that filename starts with dotfile
+			base := filename[len(tt.path)+1:]
+			if !strings.HasPrefix(base, ".testservice-fill-") {
+				t.Errorf("Filename base %q does not start with .testservice-fill-", base)
+			}
+		})
+	}
+}
+
+// TestDiskFillInvalidPath tests error handling for missing directory
+func TestDiskFillInvalidPath(t *testing.T) {
+	tmpDir := t.TempDir()
+	invalidPath := tmpDir + "/nonexistent"
+
+	err := createDiskFillFile(invalidPath+"/file.dat", 1024)
+	if err == nil {
+		t.Error("Expected error for invalid path, but got none")
+	}
+
+	if !strings.Contains(err.Error(), "does not exist") {
+		t.Errorf("Error message should mention non-existent directory, got: %v", err)
+	}
+}
+
+// TestApplyDiskReturnsErrorImmediately tests that ApplyDisk returns errors synchronously
+func TestApplyDiskReturnsErrorImmediately(t *testing.T) {
+	tmpDir := t.TempDir()
+	invalidPath := tmpDir + "/nonexistent"
+
+	b := &Behavior{
+		Disk: &DiskBehavior{
+			Size:     1024,
+			Path:     invalidPath, // Directory doesn't exist
+			Duration: 1 * time.Minute,
+		},
+	}
+
+	ctx := context.Background()
+	traceID := "test-trace-id"
+
+	// ApplyDisk should return error immediately (synchronously)
+	err := b.ApplyDisk(ctx, traceID)
+	if err == nil {
+		t.Error("Expected ApplyDisk to return error immediately for invalid path")
+	}
+
+	if !strings.Contains(err.Error(), "does not exist") {
+		t.Errorf("Error should mention non-existent directory, got: %v", err)
+	}
+}
+
+// TestBehavior_GetAppliedBehaviors_Disk tests that disk appears in applied list
+func TestBehavior_GetAppliedBehaviors_Disk(t *testing.T) {
+	b := &Behavior{
+		Disk: &DiskBehavior{
+			Size:     500 * 1024 * 1024,
+			Path:     "/cache",
+			Duration: 10 * time.Minute,
+		},
+	}
+
+	applied := b.GetAppliedBehaviors()
+	if len(applied) != 1 {
+		t.Fatalf("Expected 1 applied behavior, got %d", len(applied))
+	}
+
+	if !strings.Contains(applied[0], "disk:fill:500Mi:/cache:10m") {
+		t.Errorf("Applied[0]: got %q, want to contain 'disk:fill:500Mi:/cache:10m'", applied[0])
+	}
+}

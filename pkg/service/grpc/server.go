@@ -88,6 +88,36 @@ func (s *Server) Call(ctx context.Context, req *pb.CallRequest) (*pb.ServiceResp
 			s.telemetry.Logger.Warn("Failed to apply behavior", zap.Error(err))
 		}
 
+		// Apply disk behavior separately (needs trace ID)
+		if beh.Disk != nil {
+			// Get trace ID from span context
+			spanCtx := span.SpanContext()
+			traceID := spanCtx.TraceID().String()
+			if err := beh.ApplyDisk(ctx, traceID); err != nil {
+				// Disk fill failed (e.g., disk full) - return ResourceExhausted
+				s.telemetry.Logger.Warn("Disk fill failed",
+					zap.Error(err),
+					zap.String("path", beh.Disk.Path),
+					zap.Int64("size", beh.Disk.Size),
+				)
+				
+				statusCode := 507 // HTTP 507 Insufficient Storage
+				behaviorsApplied = beh.GetAppliedBehaviors()
+				
+				resp := s.buildResponse(ctx, start, statusCode, behaviorsApplied, nil)
+				resp.Body = fmt.Sprintf("Disk fill failed: %v", err)
+
+				s.telemetry.RecordBehavior("disk-fill-failed")
+				
+				span.SetAttributes(
+					semconv.RPCGRPCStatusCodeKey.Int(int(grpc_codes.ResourceExhausted)),
+					semconv.ErrorTypeKey.String("disk_full"),
+				)
+				span.SetStatus(codes.Error, fmt.Sprintf("Disk fill failed: %v", err))
+				return resp, nil
+			}
+		}
+
 		// Check for crash-if-file (do this BEFORE panic and error checks)
 		if shouldCrash, matched, msg := beh.ShouldCrashOnFile(); shouldCrash {
 			s.telemetry.Logger.Fatal("Config file contains invalid content - crashing as configured",

@@ -117,6 +117,29 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			s.telemetry.Logger.Warn("Failed to apply behavior", zap.Error(err))
 		}
 
+		// Apply disk behavior separately (needs trace ID)
+		if beh.Disk != nil {
+			traceID := resp.TraceId
+			if err := beh.ApplyDisk(ctx, traceID); err != nil {
+				// Disk fill failed (e.g., disk full) - return 507
+				s.telemetry.Logger.Warn("Disk fill failed",
+					zap.Error(err),
+					zap.String("path", beh.Disk.Path),
+					zap.Int64("size", beh.Disk.Size),
+				)
+				now := time.Now()
+				resp.Code = 507
+				resp.Body = fmt.Sprintf("Disk fill failed: %v", err)
+				resp.BehaviorsApplied = beh.GetAppliedBehaviors()
+				resp.EndTime = now.Format(time.RFC3339Nano)
+				resp.Duration = now.Sub(start).String()
+
+				s.telemetry.RecordBehavior("disk-fill-failed")
+				s.sendResponse(w, r, resp, 507, span, start)
+				return
+			}
+		}
+
 		// Check for crash-if-file (do this BEFORE panic and error checks)
 		if shouldCrash, matched, msg := beh.ShouldCrashOnFile(); shouldCrash {
 			s.telemetry.Logger.Fatal("Config file contains invalid content - crashing as configured",
