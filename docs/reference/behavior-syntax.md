@@ -618,6 +618,98 @@ Combined resource exhaustion:
 cpu=spike:10s:90,memory=spike:80%:10s
 ```
 
+## Disk Behaviors
+
+Fill disk space to simulate storage exhaustion.
+
+### Syntax
+
+```
+disk=fill:<size>:<path>[:<duration>]
+```
+
+### Parameters
+
+- **Size**: Amount to allocate (e.g., `500Mi`, `1Gi`, `2Gi`)
+  - Units: `Mi` (mebibytes), `Gi` (gibibytes)
+- **Path**: Directory to fill (e.g., `/cache`, `/data`, `/tmp`)
+  - Directory must exist
+  - Typically a PVC mount point
+- **Duration**: How long to hold the allocation (optional, default: `10m`)
+  - Units: `s` (seconds), `m` (minutes), `h` (hours)
+
+### Examples
+
+```bash
+# Fill 500Mi in /cache for 10 minutes
+disk=fill:500Mi:/cache:10m
+
+# Fill 1Gi in /data, default 10m duration
+disk=fill:1Gi:/data
+
+# Service-targeted: product-api fills 2Gi
+product-api:disk=fill:2Gi:/shared:5m
+
+# Combined with other behaviors
+latency=200ms,disk=fill:500Mi:/tmp:2m
+```
+
+### Behavior Details
+
+- **File Creation**: Creates one file per request
+  - Filename pattern: `.testservice-fill-<traceID>-<random>.dat`
+  - TraceID enables cross-service correlation in distributed traces
+  - Random suffix ensures uniqueness when multiple services write in same trace
+- **Non-blocking**: Returns immediately (like cpu/memory behaviors)
+  - Combine with `latency` if controlled response time needed
+- **Auto-cleanup**: File automatically removed after duration expires
+- **Background goroutine**: Handles duration tracking and cleanup
+
+### Error Handling
+
+- **Success**: Returns HTTP 200, file persists for duration
+- **Disk Full**: Returns HTTP 507 Insufficient Storage (gRPC: ResourceExhausted)
+- **Invalid Path**: Logged, request continues without disk fill
+- **Logging**: Logs allocation success/failure with file path and size
+
+### Use Cases
+
+- **Scenario 8 (kkbase)**: Shared PVC Exhaustion - Multiple pods sharing PVC, one fills it causing failures in others
+- **Kubernetes Disk Pressure**: Trigger node disk pressure eviction and observe pod rescheduling
+- **PVC Capacity Testing**: Test behavior when PersistentVolumeClaim reaches capacity limits
+- **Prometheus Alerts**: Trigger disk usage alerts and verify monitoring/alerting pipeline
+- **StatefulSet Storage**: Test StatefulSet behavior under storage constraints
+
+### Implementation Notes
+
+- Single file per request (not multiple chunks)
+- File size matches requested allocation exactly
+- Uses fast allocation method (seek + write to allocate space)
+- Dotfile prefix (`.testservice-fill-`) to avoid conflicts
+- Includes OpenTelemetry trace ID in filename for observability
+- Clean error handling for ENOSPC (no space on device)
+
+### Complete Examples
+
+```bash
+# Trigger disk pressure for monitoring
+curl "/?behavior=disk=fill:2Gi:/data:5m"
+
+# Simulate shared PVC exhaustion scenario
+# Pod 1: Fill most of shared PVC
+curl "http://service-a:8080/?behavior=disk=fill:9Gi:/shared:30m"
+
+# Pod 2: Try to write and fail
+curl "http://service-b:8080/?behavior=disk=fill:2Gi:/shared:30m"
+# Returns 507 if disk is full
+
+# Combined with latency for realistic testing
+curl "/?behavior=latency=100-300ms,disk=fill:500Mi:/cache:10m"
+
+# Service-targeted disk fill
+curl "/?behavior=product-api:disk=fill:1Gi:/var/cache:15m"
+```
+
 ## Service-Targeted Behaviors
 
 Apply behaviors to specific services in the call chain.
