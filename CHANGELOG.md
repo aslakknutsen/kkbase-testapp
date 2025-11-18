@@ -2,6 +2,19 @@
 
 ## [Unreleased]
 
+### Breaking Changes
+- **502 Bad Gateway on upstream failures** - Services now return 502 instead of 200 when upstream services fail (return >= 300 status codes). Clients must handle 5xx responses. (commit 370daa2)
+- **Behavior engine internal API changes** - Modularized with registry pattern. CustomParams field removed. (commits 4cae340, 7aa4cec)
+
+### Changed
+- Response body simplified from "Hello from {service} ({protocol})" to "All ok" (commit f326d58)
+- Protocol field removed from RequestContext (now passed as explicit parameter) (commit f326d58)
+
+### Refactored
+- Extracted path routing logic into dedicated `pkg/service/router` package (commit 8aad067)
+- Extracted duplicate behavior logic into shared components (commit 1403da6)
+- Modularized behavior engine with registry pattern (commit 4cae340)
+
 ### Added
 - **Targeted Behavior Chains** - Target specific services in call chains
   - New syntax: `service-name:behavior=value` (e.g., `product-api:latency=500ms`)

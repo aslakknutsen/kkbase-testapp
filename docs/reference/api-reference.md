@@ -49,7 +49,7 @@ X-Behavior: latency=100ms
   "end_time": "2025-10-27T12:34:56.891234567Z",
   "duration": "102.111111ms",
   "code": 200,
-  "body": "Hello from frontend (HTTP)",
+  "body": "All ok",
   "trace_id": "4bf92f3577b34da6a3ce929d0e0e4736",
   "span_id": "00f067aa0ba902b7",
   "upstream_calls": [
@@ -74,8 +74,13 @@ X-Behavior: latency=100ms
 | 200 | Success |
 | 404 | No upstream matches path (path routing) |
 | 500 | Server error or injected error behavior |
+| 502 | Bad Gateway - upstream service returned non-2xx status |
 | 503 | Service unavailable or injected error |
 | 429 | Rate limit (injected error behavior) |
+
+**Error Response Details:**
+- **502 Bad Gateway**: Returned when an upstream service returns a status code >= 300. The error message includes the failing service name and status code.
+- **500 Internal Server Error**: Returned for server errors or when error injection behavior is applied via the `error` behavior parameter.
 
 **Examples:**
 
