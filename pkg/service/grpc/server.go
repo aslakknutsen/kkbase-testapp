@@ -72,11 +72,10 @@ func (s *Server) Call(ctx context.Context, req *pb.CallRequest) (*pb.ServiceResp
 		TraceID:     traceID,
 		SpanID:      spanID,
 		BehaviorStr: req.Behavior,
-		Protocol:    "grpc",
 	}
 
 	// Process request with handler (behavior execution)
-	resp, earlyExit, err := s.handler.ProcessRequest(reqCtx)
+	resp, earlyExit, err := s.handler.ProcessRequest(reqCtx, "grpc")
 	if err != nil {
 		s.telemetry.Logger.Error("Failed to process request", zap.Error(err))
 		span.RecordError(err)
@@ -119,7 +118,7 @@ func (s *Server) Call(ctx context.Context, req *pb.CallRequest) (*pb.ServiceResp
 		if behaviorStr != "" {
 			behaviorsApplied = behaviorStr
 		}
-		resp = s.handler.BuildUpstreamErrorResponse(reqCtx, failedCall, behaviorsApplied, upstreamCalls)
+		resp = s.handler.BuildUpstreamErrorResponse(reqCtx, "grpc", failedCall, behaviorsApplied, upstreamCalls)
 
 		span.SetAttributes(semconv.RPCGRPCStatusCodeKey.Int(int(grpc_codes.Unavailable)))
 		span.SetStatus(codes.Error, resp.Body)
@@ -133,7 +132,7 @@ func (s *Server) Call(ctx context.Context, req *pb.CallRequest) (*pb.ServiceResp
 	if behaviorStr != "" {
 		behaviorsApplied = behaviorStr
 	}
-	resp = s.handler.BuildSuccessResponse(reqCtx, behaviorsApplied, upstreamCalls)
+	resp = s.handler.BuildSuccessResponse(reqCtx, "grpc", behaviorsApplied, upstreamCalls)
 
 	span.SetAttributes(semconv.RPCGRPCStatusCodeKey.Int(int(grpc_codes.OK)))
 	span.SetStatus(codes.Ok, "")

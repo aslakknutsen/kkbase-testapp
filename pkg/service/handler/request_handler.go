@@ -20,7 +20,6 @@ type RequestContext struct {
 	TraceID     string
 	SpanID      string
 	BehaviorStr string
-	Protocol    string // "http" or "grpc"
 }
 
 // RequestHandler encapsulates common request handling logic for both HTTP and gRPC
@@ -41,7 +40,7 @@ func NewRequestHandler(cfg *service.Config, caller *client.Caller, tel *telemetr
 
 // ProcessRequest handles the complete request lifecycle
 // Returns a response and a boolean indicating if it's an early exit (before upstream calls)
-func (h *RequestHandler) ProcessRequest(reqCtx *RequestContext) (*pb.ServiceResponse, bool, error) {
+func (h *RequestHandler) ProcessRequest(reqCtx *RequestContext, protocol string) (*pb.ServiceResponse, bool, error) {
 	// Get default behavior if not provided
 	behaviorStr := reqCtx.BehaviorStr
 	if behaviorStr == "" {
@@ -51,7 +50,7 @@ func (h *RequestHandler) ProcessRequest(reqCtx *RequestContext) (*pb.ServiceResp
 	// Parse behavior chain
 	behaviorChain, err := behavior.ParseChain(behaviorStr)
 	if err != nil {
-		h.telemetry.Logger.Warn("Failed to parse behavior chain", 
+		h.telemetry.Logger.Warn("Failed to parse behavior chain",
 			zap.Error(err))
 		// Continue with empty behavior chain
 		behaviorChain = &behavior.BehaviorChain{}
@@ -75,9 +74,9 @@ func (h *RequestHandler) ProcessRequest(reqCtx *RequestContext) (*pb.ServiceResp
 		if result != nil && result.ShouldReturn {
 			// Record behavior metric
 			h.telemetry.RecordBehavior(result.BehaviorType)
-			
+
 			// Build and return error response
-			resp := h.buildResponse(reqCtx, result.StatusCode, result.ErrorMessage, behaviorsApplied, nil)
+			resp := h.buildResponse(reqCtx, protocol, result.StatusCode, result.ErrorMessage, behaviorsApplied, nil)
 			return resp, true, nil
 		}
 
@@ -115,7 +114,7 @@ func (h *RequestHandler) CallUpstreams(ctx context.Context, behaviorStr string, 
 
 		// Convert to pb.UpstreamCall and record metrics
 		call := h.ResultToUpstreamCall(result)
-		
+
 		// Determine method for metrics
 		method := "Call"
 		if result.Protocol == "http" {
@@ -130,15 +129,15 @@ func (h *RequestHandler) CallUpstreams(ctx context.Context, behaviorStr string, 
 }
 
 // BuildSuccessResponse builds a successful response
-func (h *RequestHandler) BuildSuccessResponse(reqCtx *RequestContext, behaviorsApplied string, upstreamCalls []*pb.UpstreamCall) *pb.ServiceResponse {
-	body := fmt.Sprintf("Hello from %s (%s)", h.config.Name, reqCtx.Protocol)
-	return h.buildResponse(reqCtx, 200, body, behaviorsApplied, upstreamCalls)
+func (h *RequestHandler) BuildSuccessResponse(reqCtx *RequestContext, protocol string, behaviorsApplied string, upstreamCalls []*pb.UpstreamCall) *pb.ServiceResponse {
+	body := "All ok"
+	return h.buildResponse(reqCtx, protocol, 200, body, behaviorsApplied, upstreamCalls)
 }
 
 // BuildUpstreamErrorResponse builds a response for upstream failures
-func (h *RequestHandler) BuildUpstreamErrorResponse(reqCtx *RequestContext, failedCall *pb.UpstreamCall, behaviorsApplied string, upstreamCalls []*pb.UpstreamCall) *pb.ServiceResponse {
+func (h *RequestHandler) BuildUpstreamErrorResponse(reqCtx *RequestContext, protocol string, failedCall *pb.UpstreamCall, behaviorsApplied string, upstreamCalls []*pb.UpstreamCall) *pb.ServiceResponse {
 	body := fmt.Sprintf("Upstream service failure: %s returned %d", failedCall.Name, failedCall.Code)
-	return h.buildResponse(reqCtx, 502, body, behaviorsApplied, upstreamCalls)
+	return h.buildResponse(reqCtx, protocol, 502, body, behaviorsApplied, upstreamCalls)
 }
 
 // CheckUpstreamFailures checks if any upstream returned non-2xx (excluding connection errors where Code=0)
@@ -152,9 +151,9 @@ func (h *RequestHandler) CheckUpstreamFailures(upstreamCalls []*pb.UpstreamCall)
 }
 
 // buildResponse constructs a response
-func (h *RequestHandler) buildResponse(reqCtx *RequestContext, code int, body string, behaviorsApplied string, upstreamCalls []*pb.UpstreamCall) *pb.ServiceResponse {
+func (h *RequestHandler) buildResponse(reqCtx *RequestContext, protocol string, code int, body string, behaviorsApplied string, upstreamCalls []*pb.UpstreamCall) *pb.ServiceResponse {
 	now := time.Now()
-	
+
 	return &pb.ServiceResponse{
 		Service: &pb.ServiceInfo{
 			Name:      h.config.Name,
@@ -162,7 +161,7 @@ func (h *RequestHandler) buildResponse(reqCtx *RequestContext, code int, body st
 			Namespace: h.config.Namespace,
 			Pod:       h.config.PodName,
 			Node:      h.config.NodeName,
-			Protocol:  reqCtx.Protocol,
+			Protocol:  protocol,
 		},
 		StartTime:        reqCtx.StartTime.Format(time.RFC3339Nano),
 		EndTime:          now.Format(time.RFC3339Nano),
@@ -198,4 +197,3 @@ func (h *RequestHandler) ResultToUpstreamCall(result client.Result) *pb.Upstream
 
 	return call
 }
-

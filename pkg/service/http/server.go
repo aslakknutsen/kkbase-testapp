@@ -94,11 +94,10 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		TraceID:     traceID,
 		SpanID:      spanID,
 		BehaviorStr: behaviorStr,
-		Protocol:    "http",
 	}
 
 	// Process request with handler (behavior execution)
-	resp, earlyExit, err := s.handler.ProcessRequest(reqCtx)
+	resp, earlyExit, err := s.handler.ProcessRequest(reqCtx, "http")
 	if err != nil {
 		s.telemetry.Logger.Error("Failed to process request", zap.Error(err))
 		span.RecordError(err)
@@ -128,7 +127,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 		// If upstreams are configured but none match, return 404
 		if matchedUpstreams == nil {
-			resp = s.handler.BuildSuccessResponse(reqCtx, behaviorsApplied, nil)
+			resp = s.handler.BuildSuccessResponse(reqCtx, "http", behaviorsApplied, nil)
 			resp.Code = 404
 			resp.Body = fmt.Sprintf("No upstream matches path: %s", r.URL.Path)
 			resp.Url = r.URL.RequestURI()
@@ -143,7 +142,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 		// Check if any upstream returned non-2xx (excluding connection errors where Code=0)
 		if failedCall := s.handler.CheckUpstreamFailures(upstreamCalls); failedCall != nil {
-			resp = s.handler.BuildUpstreamErrorResponse(reqCtx, failedCall, behaviorsApplied, upstreamCalls)
+			resp = s.handler.BuildUpstreamErrorResponse(reqCtx, "http", failedCall, behaviorsApplied, upstreamCalls)
 			resp.Url = r.URL.RequestURI()
 			s.sendResponse(w, r, resp, 502, span, start)
 			return
@@ -151,7 +150,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Build success response
-	resp = s.handler.BuildSuccessResponse(reqCtx, behaviorsApplied, upstreamCalls)
+	resp = s.handler.BuildSuccessResponse(reqCtx, "http", behaviorsApplied, upstreamCalls)
 	resp.Url = r.URL.RequestURI()
 	s.sendResponse(w, r, resp, 200, span, start)
 }

@@ -69,10 +69,9 @@ func TestProcessRequest_NoBehavior(t *testing.T) {
 		TraceID:     "trace123",
 		SpanID:      "span456",
 		BehaviorStr: "",
-		Protocol:    "http",
 	}
 
-	resp, earlyExit, err := handler.ProcessRequest(reqCtx)
+	resp, earlyExit, err := handler.ProcessRequest(reqCtx, "http")
 
 	if err != nil {
 		t.Errorf("Expected no error, got %v", err)
@@ -97,11 +96,10 @@ func TestProcessRequest_LatencyBehavior(t *testing.T) {
 		TraceID:     "trace123",
 		SpanID:      "span456",
 		BehaviorStr: "latency=50ms",
-		Protocol:    "http",
 	}
 
 	start := time.Now()
-	resp, earlyExit, err := handler.ProcessRequest(reqCtx)
+	resp, earlyExit, err := handler.ProcessRequest(reqCtx, "http")
 	duration := time.Since(start)
 
 	if err != nil {
@@ -130,10 +128,9 @@ func TestProcessRequest_ErrorBehavior(t *testing.T) {
 		TraceID:     "trace123",
 		SpanID:      "span456",
 		BehaviorStr: "error=503",
-		Protocol:    "http",
 	}
 
-	resp, earlyExit, err := handler.ProcessRequest(reqCtx)
+	resp, earlyExit, err := handler.ProcessRequest(reqCtx, "http")
 
 	if err != nil {
 		t.Errorf("Expected no error, got %v", err)
@@ -164,10 +161,9 @@ func TestProcessRequest_DiskBehaviorFailure(t *testing.T) {
 		TraceID:     "trace123",
 		SpanID:      "span456",
 		BehaviorStr: "disk=fill:1Ki:/nonexistent/path:1s",
-		Protocol:    "http",
 	}
 
-	resp, earlyExit, err := handler.ProcessRequest(reqCtx)
+	resp, earlyExit, err := handler.ProcessRequest(reqCtx, "http")
 
 	if err != nil {
 		t.Errorf("Expected no error, got %v", err)
@@ -201,10 +197,9 @@ func TestProcessRequest_ErrorIfFile(t *testing.T) {
 		TraceID:     "trace123",
 		SpanID:      "span456",
 		BehaviorStr: fmt.Sprintf("error-if-file=%s:invalid_key:401", tmpFile),
-		Protocol:    "http",
 	}
 
-	resp, earlyExit, err := handler.ProcessRequest(reqCtx)
+	resp, earlyExit, err := handler.ProcessRequest(reqCtx, "http")
 
 	if err != nil {
 		t.Errorf("Expected no error, got %v", err)
@@ -234,10 +229,9 @@ func TestProcessRequest_TargetedBehavior(t *testing.T) {
 		TraceID:     "trace123",
 		SpanID:      "span456",
 		BehaviorStr: "service-b:error=500",
-		Protocol:    "http",
 	}
 
-	resp, earlyExit, err := handler.ProcessRequest(reqCtx)
+	resp, earlyExit, err := handler.ProcessRequest(reqCtx, "http")
 
 	if err != nil {
 		t.Errorf("Expected no error, got %v", err)
@@ -362,10 +356,9 @@ func TestBuildSuccessResponse(t *testing.T) {
 		StartTime: time.Now(),
 		TraceID:   "trace123",
 		SpanID:    "span456",
-		Protocol:  "http",
 	}
 
-	resp := handler.BuildSuccessResponse(reqCtx, "latency=100ms", nil)
+	resp := handler.BuildSuccessResponse(reqCtx, "http", "latency=100ms", nil)
 
 	if resp.Code != 200 {
 		t.Errorf("Expected code 200, got %d", resp.Code)
@@ -392,7 +385,6 @@ func TestBuildUpstreamErrorResponse(t *testing.T) {
 		StartTime: time.Now(),
 		TraceID:   "trace123",
 		SpanID:    "span456",
-		Protocol:  "grpc",
 	}
 
 	failedCall := &pb.UpstreamCall{
@@ -400,7 +392,7 @@ func TestBuildUpstreamErrorResponse(t *testing.T) {
 		Code: 500,
 	}
 
-	resp := handler.BuildUpstreamErrorResponse(reqCtx, failedCall, "", nil)
+	resp := handler.BuildUpstreamErrorResponse(reqCtx, "grpc", failedCall, "", nil)
 
 	if resp.Code != 502 {
 		t.Errorf("Expected code 502, got %d", resp.Code)
