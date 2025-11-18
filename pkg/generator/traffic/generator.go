@@ -36,6 +36,7 @@ type trafficJobData struct {
 	WrapperScript   string
 	Paths           []string
 	PathPattern     string
+	Behavior        string
 }
 
 // NewGenerator creates a new traffic generator
@@ -141,6 +142,7 @@ func (g *Generator) generateTrafficJob(traffic *types.TrafficConfig) (string, er
 		WrapperScript:   wrapperScript,
 		Paths:           traffic.Paths,
 		PathPattern:     pathPattern,
+		Behavior:        traffic.Behavior,
 	}
 
 	var buf bytes.Buffer
@@ -158,15 +160,21 @@ func (g *Generator) generateWrapperScript(traffic *types.TrafficConfig, rate, du
 		pattern = "steady"
 	}
 
+	// Append behavior query param if specified
+	url := targetURL
+	if traffic.Behavior != "" {
+		url = fmt.Sprintf("%s?behavior=%s", targetURL, traffic.Behavior)
+	}
+
 	switch pattern {
 	case "steady":
-		return g.generateSteadyScript(rate, duration, targetURL)
+		return g.generateSteadyScript(rate, duration, url)
 	case "spiky":
-		return g.generateSpikyScript(rate, duration, targetURL)
+		return g.generateSpikyScript(rate, duration, url)
 	case "diurnal":
-		return g.generateDiurnalScript(rate, duration, targetURL)
+		return g.generateDiurnalScript(rate, duration, url)
 	default:
-		return g.generateSteadyScript(rate, duration, targetURL)
+		return g.generateSteadyScript(rate, duration, url)
 	}
 }
 
@@ -309,6 +317,13 @@ echo "$(date): Diurnal traffic complete"
 
 // generateMultiPathScript generates a script that distributes traffic across multiple paths
 func (g *Generator) generateMultiPathScript(rate, duration int, baseURL string, paths []string, pathPattern, trafficPattern string) string {
+	// Extract behavior query param if present
+	behaviorParam := ""
+	if strings.Contains(baseURL, "?behavior=") {
+		parts := strings.SplitN(baseURL, "?", 2)
+		baseURL = parts[0]
+		behaviorParam = "?" + parts[1]
+	}
 	durationStr := fmt.Sprintf("%ds", duration)
 	if duration == 0 {
 		durationStr = "0"
@@ -343,7 +358,7 @@ while [ $(date +%%s) -lt $END_TIME ]; do
     RANDOM_INDEX=$(($(od -An -N2 -i /dev/urandom) %% PATH_COUNT + 1))
     SELECTED_PATH=$(echo "$PATHS" | sed -n "${RANDOM_INDEX}p" | tr -d ' "')
     
-    FULL_URL="%s${SELECTED_PATH}"
+    FULL_URL="%s${SELECTED_PATH}%s"
     
     REMAINING=$((END_TIME - $(date +%%s)))
     if [ $REMAINING -le 0 ]; then
@@ -360,7 +375,7 @@ while [ $(date +%%s) -lt $END_TIME ]; do
 done
 
 echo "$(date): Multi-path traffic complete"
-`, trafficPattern, baseURL, len(paths), rate, durationStr, pathsList, duration, baseURL, rate, rate)
+`, trafficPattern, baseURL, len(paths), rate, durationStr, pathsList, duration, baseURL, behaviorParam, rate, rate)
 
 	case "sequential":
 		return fmt.Sprintf(`#!/bin/sh
@@ -384,7 +399,7 @@ PATH_INDEX=1
 
 while [ $(date +%%s) -lt $END_TIME ]; do
     SELECTED_PATH=$(echo "$PATH_ARRAY" | sed -n "${PATH_INDEX}p")
-    FULL_URL="%s${SELECTED_PATH}"
+    FULL_URL="%s${SELECTED_PATH}%s"
     
     REMAINING=$((END_TIME - $(date +%%s)))
     if [ $REMAINING -le 0 ]; then
@@ -407,7 +422,7 @@ while [ $(date +%%s) -lt $END_TIME ]; do
 done
 
 echo "$(date): Multi-path traffic complete"
-`, trafficPattern, baseURL, len(paths), rate, durationStr, pathsList, duration, baseURL, rate, rate)
+`, trafficPattern, baseURL, len(paths), rate, durationStr, pathsList, duration, baseURL, behaviorParam, rate, rate)
 
 	default: // round-robin
 		return fmt.Sprintf(`#!/bin/sh
@@ -436,7 +451,7 @@ echo "Rate per path: ${RATE_PER_PATH} qps"
 # Build fortio command with all paths
 FORTIO_CMD="fortio load -qps $RATE_PER_PATH -t %s -c 2"
 for path in $PATH_ARRAY; do
-    FULL_URL="%s${path}"
+    FULL_URL="%s${path}%s"
     echo "  Adding path: $path"
     FORTIO_CMD="$FORTIO_CMD $FULL_URL &"
 done
@@ -446,7 +461,7 @@ eval $FORTIO_CMD
 wait
 
 echo "$(date): Multi-path traffic complete"
-`, trafficPattern, baseURL, len(paths), rate, durationStr, pathsList, rate, durationStr, baseURL)
+`, trafficPattern, baseURL, len(paths), rate, durationStr, pathsList, rate, durationStr, baseURL, behaviorParam)
 	}
 }
 

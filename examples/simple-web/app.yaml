@@ -62,4 +62,5 @@ traffic:
     target: frontend
     rate: "50/s"
     pattern: steady
+    # behavior: "latency=100ms"  # Optional: inject behavior into traffic
 

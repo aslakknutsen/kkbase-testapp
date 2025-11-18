@@ -130,6 +130,7 @@ type TrafficConfig struct {
 	Duration    string   `yaml:"duration,omitempty"`
 	Paths       []string `yaml:"paths,omitempty"`       // List of paths to call
 	PathPattern string   `yaml:"pathPattern,omitempty"` // round-robin, random, sequential
+	Behavior    string   `yaml:"behavior,omitempty"`    // Behavior query param to inject
 }
 
 // ScenarioConfig defines time-based scenarios

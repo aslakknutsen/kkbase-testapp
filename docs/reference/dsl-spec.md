@@ -466,6 +466,7 @@ services:
 | `duration` | string | Duration (0 = continuous) |
 | `paths` | []string | List of URL paths to call (optional) |
 | `pathPattern` | string | How to distribute across paths: `round-robin` (default), `random`, `sequential` |
+| `behavior` | string | Behavior injection query parameter (optional) |
 
 ### Examples
 
@@ -507,6 +508,19 @@ traffic:
       - /api/v1/reviews
     pathPattern: random
 ```
+
+**With Behavior Injection:**
+```yaml
+traffic:
+  - name: chaos-load
+    target: frontend
+    rate: "50/s"
+    pattern: steady
+    duration: "1h"
+    behavior: "latency=500ms,error=0.1"
+```
+
+The `behavior` field injects runtime behaviors into the generated traffic. The behavior string is appended as a query parameter to the target URL and propagates through the entire call chain. This enables testing of cascading failures, latency injection, and error scenarios without requiring in-process load generation.
 
 ### Implementation Details
 
