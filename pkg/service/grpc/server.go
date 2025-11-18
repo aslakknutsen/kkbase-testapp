@@ -16,6 +16,7 @@ import (
 	"go.uber.org/zap"
 	grpc_codes "google.golang.org/grpc/codes"
 	"google.golang.org/grpc/peer"
+	"google.golang.org/grpc/status"
 )
 
 // Server implements the TestService gRPC server
@@ -206,6 +207,21 @@ func (s *Server) Call(ctx context.Context, req *pb.CallRequest) (*pb.ServiceResp
 
 	// Make upstream calls with behavior chain propagated
 	upstreamCalls := s.callAllUpstreams(ctx, behaviorStr)
+
+	// Check if any upstream returned non-2xx (excluding connection errors where Code=0)
+	for _, call := range upstreamCalls {
+		if call.Code >= 300 {
+			// Build response with 502 code
+			resp := s.buildResponse(ctx, start, 502, behaviorsApplied, upstreamCalls)
+			resp.Body = fmt.Sprintf("Upstream service failure: %s returned %d", call.Name, call.Code)
+
+			span.SetAttributes(semconv.RPCGRPCStatusCodeKey.Int(int(grpc_codes.Unavailable)))
+			span.SetStatus(codes.Error, fmt.Sprintf("Upstream failure: %s returned %d", call.Name, call.Code))
+
+			// Return gRPC error with Unavailable status (maps to 502/503)
+			return resp, status.Errorf(grpc_codes.Unavailable, "Upstream service failure: %s returned %d", call.Name, call.Code)
+		}
+	}
 
 	// Build response
 	resp := s.buildResponse(ctx, start, 200, behaviorsApplied, upstreamCalls)

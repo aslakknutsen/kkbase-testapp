@@ -127,12 +127,12 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 					zap.String("path", beh.Disk.Path),
 					zap.Int64("size", beh.Disk.Size),
 				)
-			now := time.Now()
-			resp.Code = 507
-			resp.Body = fmt.Sprintf("Disk fill failed: %v", err)
-			resp.BehaviorsApplied = beh.String()
-			resp.EndTime = now.Format(time.RFC3339Nano)
-			resp.Duration = now.Sub(start).String()
+				now := time.Now()
+				resp.Code = 507
+				resp.Body = fmt.Sprintf("Disk fill failed: %v", err)
+				resp.BehaviorsApplied = beh.String()
+				resp.EndTime = now.Format(time.RFC3339Nano)
+				resp.Duration = now.Sub(start).String()
 
 				s.telemetry.RecordBehavior("disk-fill-failed")
 				s.sendResponse(w, r, resp, 507, span, start)
@@ -236,6 +236,20 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 		// Call matched upstreams
 		resp.UpstreamCalls = s.callMatchedUpstreams(ctx, matchedUpstreams, r.URL.Path, behaviorStr)
+
+		// Check if any upstream returned non-2xx (excluding connection errors where Code=0)
+		for _, call := range resp.UpstreamCalls {
+			if call.Code >= 300 {
+				now := time.Now()
+				resp.Code = 502
+				resp.Body = fmt.Sprintf("Upstream service failure: %s returned %d", call.Name, call.Code)
+				resp.EndTime = now.Format(time.RFC3339Nano)
+				resp.Duration = now.Sub(start).String()
+
+				s.sendResponse(w, r, resp, 502, span, start)
+				return
+			}
+		}
 	}
 
 	// Set success response
