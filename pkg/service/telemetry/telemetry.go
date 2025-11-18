@@ -241,40 +241,59 @@ func initMetrics() *Metrics {
 
 // RecordRequest records metrics for an HTTP server request
 func (t *Telemetry) RecordRequest(method, path string, statusCode int, duration time.Duration) {
+	if t.Metrics == nil {
+		return
+	}
+	
 	statusCodeStr := fmt.Sprintf("%d", statusCode)
 	
-	t.Metrics.HTTPServerRequestsTotal.WithLabelValues(
-		method,
-		path,
-		statusCodeStr,
-	).Inc()
+	if t.Metrics.HTTPServerRequestsTotal != nil {
+		t.Metrics.HTTPServerRequestsTotal.WithLabelValues(
+			method,
+			path,
+			statusCodeStr,
+		).Inc()
+	}
 
-	t.Metrics.HTTPServerRequestDuration.WithLabelValues(
-		method,
-		path,
-		statusCodeStr,
-	).Observe(duration.Seconds())
+	if t.Metrics.HTTPServerRequestDuration != nil {
+		t.Metrics.HTTPServerRequestDuration.WithLabelValues(
+			method,
+			path,
+			statusCodeStr,
+		).Observe(duration.Seconds())
+	}
 }
 
 // RecordUpstreamCall records metrics for an HTTP client (upstream) call
 func (t *Telemetry) RecordUpstreamCall(method, destinationService string, statusCode int, duration time.Duration) {
+	if t.Metrics == nil {
+		return
+	}
+	
 	statusCodeStr := fmt.Sprintf("%d", statusCode)
 	
-	t.Metrics.HTTPClientRequestsTotal.WithLabelValues(
-		method,
-		destinationService,
-		statusCodeStr,
-	).Inc()
+	if t.Metrics.HTTPClientRequestsTotal != nil {
+		t.Metrics.HTTPClientRequestsTotal.WithLabelValues(
+			method,
+			destinationService,
+			statusCodeStr,
+		).Inc()
+	}
 
-	t.Metrics.HTTPClientRequestDuration.WithLabelValues(
-		method,
-		destinationService,
-		statusCodeStr,
-	).Observe(duration.Seconds())
+	if t.Metrics.HTTPClientRequestDuration != nil {
+		t.Metrics.HTTPClientRequestDuration.WithLabelValues(
+			method,
+			destinationService,
+			statusCodeStr,
+		).Observe(duration.Seconds())
+	}
 }
 
 // RecordBehavior records when a behavior is applied
 func (t *Telemetry) RecordBehavior(behaviorType string) {
+	if t.Metrics == nil || t.Metrics.BehaviorAppliedTotal == nil {
+		return
+	}
 	t.Metrics.BehaviorAppliedTotal.WithLabelValues(
 		t.ServiceName,
 		behaviorType,
@@ -283,21 +302,33 @@ func (t *Telemetry) RecordBehavior(behaviorType string) {
 
 // IncActiveRequests increments active HTTP server request counter
 func (t *Telemetry) IncActiveRequests(method, path string) {
+	if t.Metrics == nil || t.Metrics.HTTPServerActiveRequests == nil {
+		return
+	}
 	t.Metrics.HTTPServerActiveRequests.WithLabelValues(method, path).Inc()
 }
 
 // DecActiveRequests decrements active HTTP server request counter
 func (t *Telemetry) DecActiveRequests(method, path string) {
+	if t.Metrics == nil || t.Metrics.HTTPServerActiveRequests == nil {
+		return
+	}
 	t.Metrics.HTTPServerActiveRequests.WithLabelValues(method, path).Dec()
 }
 
 // IncActiveClientRequests increments active HTTP client request counter
 func (t *Telemetry) IncActiveClientRequests(destinationService string) {
+	if t.Metrics == nil || t.Metrics.HTTPClientActiveRequests == nil {
+		return
+	}
 	t.Metrics.HTTPClientActiveRequests.WithLabelValues(destinationService).Inc()
 }
 
 // DecActiveClientRequests decrements active HTTP client request counter
 func (t *Telemetry) DecActiveClientRequests(destinationService string) {
+	if t.Metrics == nil || t.Metrics.HTTPClientActiveRequests == nil {
+		return
+	}
 	t.Metrics.HTTPClientActiveRequests.WithLabelValues(destinationService).Dec()
 }
 

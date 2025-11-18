@@ -10,8 +10,8 @@ import (
 	"time"
 
 	"github.com/aslakknutsen/kkbase/testapp/pkg/service"
-	"github.com/aslakknutsen/kkbase/testapp/pkg/service/behavior"
 	"github.com/aslakknutsen/kkbase/testapp/pkg/service/client"
+	"github.com/aslakknutsen/kkbase/testapp/pkg/service/handler"
 	"github.com/aslakknutsen/kkbase/testapp/pkg/service/telemetry"
 	pb "github.com/aslakknutsen/kkbase/testapp/proto/testservice"
 	"go.opentelemetry.io/otel"
@@ -28,14 +28,17 @@ type Server struct {
 	config    *service.Config
 	telemetry *telemetry.Telemetry
 	caller    *client.Caller
+	handler   *handler.RequestHandler
 }
 
 // NewServer creates a new HTTP server
 func NewServer(cfg *service.Config, tel *telemetry.Telemetry) *Server {
+	caller := client.NewCaller(tel)
 	return &Server{
 		config:    cfg,
 		telemetry: tel,
-		caller:    client.NewCaller(tel),
+		caller:    caller,
+		handler:   handler.NewRequestHandler(cfg, caller, tel),
 	}
 }
 
@@ -68,24 +71,11 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	s.telemetry.IncActiveRequests(r.Method, r.URL.Path)
 	defer s.telemetry.DecActiveRequests(r.Method, r.URL.Path)
 
-	// Create response
-	resp := &pb.ServiceResponse{
-		Service: &pb.ServiceInfo{
-			Name:      s.config.Name,
-			Version:   s.config.Version,
-			Namespace: s.config.Namespace,
-			Pod:       s.config.PodName,
-			Node:      s.config.NodeName,
-			Protocol:  "http",
-		},
-		StartTime: start.Format(time.RFC3339Nano),
-		Url:       r.URL.RequestURI(),
-	}
-
 	// Get trace IDs
+	var traceID, spanID string
 	if spanCtx := span.SpanContext(); spanCtx.IsValid() {
-		resp.TraceId = spanCtx.TraceID().String()
-		resp.SpanId = spanCtx.SpanID().String()
+		traceID = spanCtx.TraceID().String()
+		spanID = spanCtx.SpanID().String()
 	}
 
 	// Parse behavior from query parameters or headers
@@ -93,196 +83,74 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if behaviorStr == "" {
 		behaviorStr = r.Header.Get("X-Behavior")
 	}
-	if behaviorStr == "" {
-		behaviorStr = s.config.DefaultBehavior
+
+	// Build request context
+	reqCtx := &handler.RequestContext{
+		Ctx:         ctx,
+		StartTime:   start,
+		TraceID:     traceID,
+		SpanID:      spanID,
+		BehaviorStr: behaviorStr,
+		Protocol:    "http",
 	}
 
-	// Parse behavior chain (supports targeted behaviors like "service:latency=100ms")
-	behaviorChain, err := behavior.ParseChain(behaviorStr)
+	// Process request with handler (behavior execution)
+	resp, earlyExit, err := s.handler.ProcessRequest(reqCtx)
 	if err != nil {
-		s.telemetry.Logger.Warn("Failed to parse behavior chain", zap.Error(err))
+		s.telemetry.Logger.Error("Failed to process request", zap.Error(err))
 		span.RecordError(err)
+		http.Error(w, "Internal server error", http.StatusInternalServerError)
+		return
 	}
 
-	// Extract behavior for THIS service
-	var beh *behavior.Behavior
-	if behaviorChain != nil {
-		beh = behaviorChain.ForService(s.config.Name)
+	// If early exit (behavior triggered error), send response
+	if earlyExit {
+		statusCode := int(resp.Code)
+		resp.Url = r.URL.RequestURI()
+		s.sendResponse(w, r, resp, statusCode, span, start)
+		return
 	}
 
-	// Apply behavior (only if it targets this service)
-	if beh != nil {
-		// Apply behavior
-		if err := beh.Apply(ctx); err != nil {
-			s.telemetry.Logger.Warn("Failed to apply behavior", zap.Error(err))
-		}
-
-		// Apply disk behavior separately (needs trace ID)
-		if beh.Disk != nil {
-			traceID := resp.TraceId
-			if err := beh.ApplyDisk(ctx, traceID); err != nil {
-				// Disk fill failed (e.g., disk full) - return 507
-				s.telemetry.Logger.Warn("Disk fill failed",
-					zap.Error(err),
-					zap.String("path", beh.Disk.Path),
-					zap.Int64("size", beh.Disk.Size),
-				)
-				now := time.Now()
-				resp.Code = 507
-				resp.Body = fmt.Sprintf("Disk fill failed: %v", err)
-				resp.BehaviorsApplied = beh.String()
-				resp.EndTime = now.Format(time.RFC3339Nano)
-				resp.Duration = now.Sub(start).String()
-
-				s.telemetry.RecordBehavior("disk-fill-failed")
-				s.sendResponse(w, r, resp, 507, span, start)
-				return
-			}
-		}
-
-		// Check for crash-if-file (do this BEFORE panic and error checks)
-		if shouldCrash, matched, msg := beh.ShouldCrashOnFile(); shouldCrash {
-			s.telemetry.Logger.Fatal("Config file contains invalid content - crashing as configured",
-				zap.String("service", s.config.Name),
-				zap.String("file", beh.CrashIfFile.FilePath),
-				zap.String("matched_content", matched),
-				zap.String("message", msg),
-			)
-			panic(fmt.Sprintf("Config file crash: %s", msg))
-		} else if msg != "" {
-			// Log file read errors without crashing
-			s.telemetry.Logger.Warn("Failed to check config file for invalid content",
-				zap.String("file", beh.CrashIfFile.FilePath),
-				zap.String("error", msg),
-			)
-		}
-
-		// Check for error-if-file (do this BEFORE panic and error checks)
-		if shouldErr, errCode, matched, msg := beh.ShouldErrorOnFile(); shouldErr {
-			s.telemetry.Logger.Warn("File contains invalid content - returning error as configured",
-				zap.String("service", s.config.Name),
-				zap.String("file", beh.ErrorIfFile.FilePath),
-				zap.String("matched_content", matched),
-				zap.Int("error_code", errCode),
-				zap.String("message", msg),
-			)
-			now := time.Now()
-			resp.Code = int32(errCode)
-			resp.Body = fmt.Sprintf("File validation failed: %s", msg)
-			resp.BehaviorsApplied = beh.String()
-			resp.EndTime = now.Format(time.RFC3339Nano)
-			resp.Duration = now.Sub(start).String()
-
-			s.telemetry.RecordBehavior("error-if-file")
-			s.sendResponse(w, r, resp, errCode, span, start)
-			return
-		} else if msg != "" {
-			// Log file read errors without returning error
-			s.telemetry.Logger.Warn("Failed to check file for invalid content",
-				zap.String("file", beh.ErrorIfFile.FilePath),
-				zap.String("error", msg),
-			)
-		}
-
-		// Check for panic injection (do this BEFORE error check)
-		if beh.ShouldPanic() {
-			s.telemetry.Logger.Fatal("Panic behavior triggered - crashing pod",
-				zap.String("service", s.config.Name),
-				zap.Float64("panic_prob", beh.Panic.Prob),
-			)
-			panic(fmt.Sprintf("Panic behavior triggered in service %s", s.config.Name))
-		}
-
-		// Check for error injection
-		if shouldErr, errCode := beh.ShouldError(); shouldErr {
-			now := time.Now()
-			resp.Code = int32(errCode)
-			resp.Body = fmt.Sprintf("Injected error: %d", errCode)
-			resp.BehaviorsApplied = beh.String()
-			resp.EndTime = now.Format(time.RFC3339Nano)
-			resp.Duration = now.Sub(start).String()
-
-			s.telemetry.RecordBehavior("error")
-			s.sendResponse(w, r, resp, errCode, span, start)
-			return
-		}
-
-		resp.BehaviorsApplied = beh.String()
-
-		// Record applied behaviors
-		if resp.BehaviorsApplied != "" {
-			s.telemetry.RecordBehavior(resp.BehaviorsApplied)
-		}
+	// Get behaviors applied for upstream propagation
+	var behaviorsApplied string
+	if behaviorStr != "" {
+		behaviorsApplied = behaviorStr
 	}
 
 	// Check if upstreams are configured
-	// If no upstreams at all, this is a leaf service - skip upstream calls
+	var upstreamCalls []*pb.UpstreamCall
 	if len(s.config.Upstreams) > 0 {
 		// Match upstreams based on request path
 		matchedUpstreams := s.matchUpstreamsForPath(r.URL.Path)
 
 		// If upstreams are configured but none match, return 404
 		if len(matchedUpstreams) == 0 {
-			now := time.Now()
+			resp = s.handler.BuildSuccessResponse(reqCtx, behaviorsApplied, nil)
 			resp.Code = 404
 			resp.Body = fmt.Sprintf("No upstream matches path: %s", r.URL.Path)
-			resp.EndTime = now.Format(time.RFC3339Nano)
-			resp.Duration = now.Sub(start).String()
+			resp.Url = r.URL.RequestURI()
 
 			s.telemetry.RecordBehavior("path_not_found")
 			s.sendResponse(w, r, resp, 404, span, start)
 			return
 		}
 
-		// Call matched upstreams
-		resp.UpstreamCalls = s.callMatchedUpstreams(ctx, matchedUpstreams, r.URL.Path, behaviorStr)
+		// Call matched upstreams with path stripping
+		upstreamCalls = s.callMatchedUpstreams(ctx, matchedUpstreams, r.URL.Path, behaviorStr)
 
 		// Check if any upstream returned non-2xx (excluding connection errors where Code=0)
-		for _, call := range resp.UpstreamCalls {
-			if call.Code >= 300 {
-				now := time.Now()
-				resp.Code = 502
-				resp.Body = fmt.Sprintf("Upstream service failure: %s returned %d", call.Name, call.Code)
-				resp.EndTime = now.Format(time.RFC3339Nano)
-				resp.Duration = now.Sub(start).String()
-
-				s.sendResponse(w, r, resp, 502, span, start)
-				return
-			}
+		if failedCall := s.handler.CheckUpstreamFailures(upstreamCalls); failedCall != nil {
+			resp = s.handler.BuildUpstreamErrorResponse(reqCtx, failedCall, behaviorsApplied, upstreamCalls)
+			resp.Url = r.URL.RequestURI()
+			s.sendResponse(w, r, resp, 502, span, start)
+			return
 		}
 	}
 
-	// Set success response
-	now := time.Now()
-	resp.Code = 200
-	resp.Body = fmt.Sprintf("Hello from %s (HTTP)", s.config.Name)
-	resp.EndTime = now.Format(time.RFC3339Nano)
-	resp.Duration = now.Sub(start).String()
-
+	// Build success response
+	resp = s.handler.BuildSuccessResponse(reqCtx, behaviorsApplied, upstreamCalls)
+	resp.Url = r.URL.RequestURI()
 	s.sendResponse(w, r, resp, 200, span, start)
-}
-
-// resultToUpstreamCall converts a client.Result to pb.UpstreamCall (for upstream calls)
-func (s *Server) resultToUpstreamCall(result client.Result) *pb.UpstreamCall {
-	call := &pb.UpstreamCall{
-		Name:             result.Name,
-		Uri:              result.URL,
-		Protocol:         result.Protocol,
-		Code:             int32(result.Code),
-		Duration:         result.Duration.String(),
-		Error:            result.Error,
-		BehaviorsApplied: result.BehaviorsApplied,
-	}
-
-	// Convert nested calls
-	if len(result.UpstreamCalls) > 0 {
-		call.UpstreamCalls = make([]*pb.UpstreamCall, len(result.UpstreamCalls))
-		for i, uc := range result.UpstreamCalls {
-			call.UpstreamCalls[i] = s.resultToUpstreamCall(uc)
-		}
-	}
-
-	return call
 }
 
 // matchUpstreamsForPath returns upstreams that match the given path
@@ -362,8 +230,8 @@ func (s *Server) callMatchedUpstreams(ctx context.Context, upstreams map[string]
 		// Use shared caller with behavior propagation
 		result := s.caller.Call(ctx, name, upstreamWithPath, behaviorStr)
 
-		// Convert to pb.UpstreamCall and record metrics
-		call := s.resultToUpstreamCall(result)
+		// Convert to pb.UpstreamCall using handler's method
+		call := s.handler.ResultToUpstreamCall(result)
 		s.telemetry.RecordUpstreamCall("GET", name, int(call.Code), result.Duration)
 
 		calls = append(calls, call)
