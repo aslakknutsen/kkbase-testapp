@@ -12,6 +12,7 @@ import (
 	"github.com/aslakknutsen/kkbase/testapp/pkg/service"
 	"github.com/aslakknutsen/kkbase/testapp/pkg/service/client"
 	"github.com/aslakknutsen/kkbase/testapp/pkg/service/handler"
+	"github.com/aslakknutsen/kkbase/testapp/pkg/service/router"
 	"github.com/aslakknutsen/kkbase/testapp/pkg/service/telemetry"
 	pb "github.com/aslakknutsen/kkbase/testapp/proto/testservice"
 	"go.opentelemetry.io/otel"
@@ -29,6 +30,7 @@ type Server struct {
 	telemetry *telemetry.Telemetry
 	caller    *client.Caller
 	handler   *handler.RequestHandler
+	router    router.Router
 }
 
 // NewServer creates a new HTTP server
@@ -39,6 +41,7 @@ func NewServer(cfg *service.Config, tel *telemetry.Telemetry) *Server {
 		telemetry: tel,
 		caller:    caller,
 		handler:   handler.NewRequestHandler(cfg, caller, tel),
+		router:    router.NewPathRouter(cfg.Upstreams),
 	}
 }
 
@@ -117,14 +120,14 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		behaviorsApplied = behaviorStr
 	}
 
-	// Check if upstreams are configured
+	// Route and call upstreams
 	var upstreamCalls []*pb.UpstreamCall
-	if len(s.config.Upstreams) > 0 {
+	if s.router.HasUpstreams() {
 		// Match upstreams based on request path
-		matchedUpstreams := s.matchUpstreamsForPath(r.URL.Path)
+		matchedUpstreams := s.router.Match(r.URL.Path)
 
 		// If upstreams are configured but none match, return 404
-		if len(matchedUpstreams) == 0 {
+		if matchedUpstreams == nil {
 			resp = s.handler.BuildSuccessResponse(reqCtx, behaviorsApplied, nil)
 			resp.Code = 404
 			resp.Body = fmt.Sprintf("No upstream matches path: %s", r.URL.Path)
@@ -153,71 +156,13 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	s.sendResponse(w, r, resp, 200, span, start)
 }
 
-// matchUpstreamsForPath returns upstreams that match the given path
-func (s *Server) matchUpstreamsForPath(path string) map[string]*service.UpstreamConfig {
-	// If no upstreams configured, return empty
-	if len(s.config.Upstreams) == 0 {
-		return nil
-	}
-
-	matched := make(map[string]*service.UpstreamConfig)
-	hasAnyPathConfig := false
-
-	for name, upstream := range s.config.Upstreams {
-		if len(upstream.Paths) == 0 {
-			// No paths configured = catch-all
-			matched[name] = upstream
-		} else {
-			hasAnyPathConfig = true
-			// Check if path matches any prefix
-			for _, prefix := range upstream.Paths {
-				if strings.HasPrefix(path, prefix) {
-					matched[name] = upstream
-					break
-				}
-			}
-		}
-	}
-
-	// If some upstreams have path config but none matched, return empty
-	if hasAnyPathConfig && len(matched) == 0 {
-		return nil
-	}
-
-	return matched
-}
-
-// stripMatchedPrefix strips the matched path prefix from the request path
-func (s *Server) stripMatchedPrefix(path string, upstream *service.UpstreamConfig) string {
-	if len(upstream.Paths) == 0 {
-		return path // No paths configured, don't strip
-	}
-
-	// Find longest matching prefix
-	longestMatch := ""
-	for _, prefix := range upstream.Paths {
-		if strings.HasPrefix(path, prefix) && len(prefix) > len(longestMatch) {
-			longestMatch = prefix
-		}
-	}
-
-	if longestMatch != "" {
-		stripped := strings.TrimPrefix(path, longestMatch)
-		if stripped == "" {
-			return "/"
-		}
-		return stripped
-	}
-	return path
-}
-
 // callMatchedUpstreams calls the matched upstreams with path stripping
 func (s *Server) callMatchedUpstreams(ctx context.Context, upstreams map[string]*service.UpstreamConfig, requestPath string, behaviorStr string) []*pb.UpstreamCall {
 	var calls []*pb.UpstreamCall
 
 	for name, upstream := range upstreams {
-		// Strip matched prefix from path
-		forwardPath := s.stripMatchedPrefix(requestPath, upstream)
+		// Strip matched prefix from path using router
+		forwardPath := s.router.StripPrefix(requestPath, upstream)
 
 		// Update upstream URL to include the path
 		upstreamWithPath := &service.UpstreamConfig{
