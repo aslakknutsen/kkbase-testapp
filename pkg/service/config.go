@@ -52,7 +52,7 @@ func LoadConfigFromEnv() *Config {
 		PodName:         getEnv("POD_NAME", os.Getenv("HOSTNAME")),
 		NodeName:        getEnv("NODE_NAME", ""),
 		HTTPPort:        getEnvInt("HTTP_PORT", 8080),
-		GRPCPort:        getEnvInt("GRPC_PORT", 9090),
+		GRPCPort:        getEnvInt("GRPC_PORT", 8080),
 		MetricsPort:     getEnvInt("METRICS_PORT", 9091),
 		DefaultBehavior: getEnv("DEFAULT_BEHAVIOR", ""),
 		OTELEndpoint:    getEnv("OTEL_EXPORTER_OTLP_ENDPOINT", ""),

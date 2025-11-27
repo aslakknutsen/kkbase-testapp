@@ -134,51 +134,9 @@ func (g *MeshGenerator) generateVirtualService(svc types.ServiceConfig, mesh typ
 				Weight: split.Weight,
 			})
 		}
-	} else if len(svc.Upstreams) > 0 {
-		// Generate routes for upstreams
-		for _, upstream := range svc.Upstreams {
-			// Find upstream service config
-			var upstreamSvc *types.ServiceConfig
-			for i := range g.spec.Services {
-				if g.spec.Services[i].Name == upstream.Name {
-					upstreamSvc = &g.spec.Services[i]
-					break
-				}
-			}
-
-			if upstreamSvc == nil {
-				continue
-			}
-
-			// Create routes for each path
-			if len(upstream.Paths) > 0 {
-				for _, path := range upstream.Paths {
-					// Determine port based on service protocol configuration
-					port := upstreamSvc.Ports.HTTP
-					if upstreamSvc.HasHTTP() && upstreamSvc.HasGRPC() {
-						// Dual-protocol service: use unified HTTP port
-						port = upstreamSvc.Ports.HTTP
-					} else if upstreamSvc.HasGRPC() && !upstreamSvc.HasHTTP() {
-						// gRPC-only service: use gRPC port
-						port = upstreamSvc.Ports.GRPC
-					}
-
-					route := httpRoute{
-						Name: fmt.Sprintf("route-%s", upstream.Name),
-						Match: []matchCondition{
-							{URIPrefix: path},
-						},
-						Destination: destination{
-							Host:      upstreamSvc.Name,
-							Namespace: upstreamSvc.Namespace,
-							Port:      port,
-						},
-					}
-					httpRoutes = append(httpRoutes, route)
-				}
-			}
-		}
 	}
+	// Note: VirtualServices route incoming traffic to the service itself.
+	// Upstreams are used by the application code for outbound calls, not for mesh routing.
 
 	// Build retry policy
 	var retries *retryPolicy

@@ -158,7 +158,7 @@ func (s *ServiceConfig) Defaults() {
 		s.Ports.HTTP = 8080
 	}
 	if s.Ports.GRPC == 0 && contains(s.Protocols, "grpc") {
-		s.Ports.GRPC = 9090
+		s.Ports.GRPC = 8080
 	}
 	if s.Ports.Metrics == 0 {
 		s.Ports.Metrics = 9091
