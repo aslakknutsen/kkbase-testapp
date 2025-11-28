@@ -123,8 +123,12 @@ func (s *Server) Call(ctx context.Context, req *pb.CallRequest) (*pb.ServiceResp
 		span.SetAttributes(semconv.RPCGRPCStatusCodeKey.Int(int(grpc_codes.Unavailable)))
 		span.SetStatus(codes.Error, resp.Body)
 
-		// Return gRPC error with Unavailable status (maps to 502/503)
-		return resp, status.Errorf(grpc_codes.Unavailable, "%s", resp.Body)
+		// Record application-level metrics (since we're not returning gRPC error)
+		s.telemetry.RecordGRPCRequest("Call", int(resp.Code), time.Since(start))
+
+		// Return response without gRPC error so upstream_calls are preserved
+		// The error info is in resp.Code and resp.Body
+		return resp, nil
 	}
 
 	// Build success response
@@ -136,6 +140,9 @@ func (s *Server) Call(ctx context.Context, req *pb.CallRequest) (*pb.ServiceResp
 
 	span.SetAttributes(semconv.RPCGRPCStatusCodeKey.Int(int(grpc_codes.OK)))
 	span.SetStatus(codes.Ok, "")
+
+	// Record application-level metrics
+	s.telemetry.RecordGRPCRequest("Call", int(resp.Code), time.Since(start))
 
 	return resp, nil
 }

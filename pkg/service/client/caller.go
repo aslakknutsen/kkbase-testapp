@@ -249,40 +249,47 @@ func (c *Caller) callGRPC(ctx context.Context, name string, upstream *service.Up
 	resp, err := client.Call(ctx, &pb.CallRequest{
 		Behavior: behaviorStr,
 	})
+
+	// Even on error, gRPC can return a response with upstream_calls
+	// Extract what we can from the response first
+	if resp != nil {
+		result.Code = int(resp.Code)
+		result.BehaviorsApplied = resp.BehaviorsApplied
+
+		// Convert nested gRPC upstream calls to Result
+		if len(resp.UpstreamCalls) > 0 {
+			for _, uc := range resp.UpstreamCalls {
+				duration, _ := time.ParseDuration(uc.Duration)
+				// Recursively convert nested calls
+				nestedResult := Result{
+					Name:             uc.Name,
+					URL:              uc.Uri,
+					Protocol:         uc.Protocol,
+					Duration:         duration,
+					Code:             int(uc.Code),
+					Error:            uc.Error,
+					BehaviorsApplied: convertBehaviorsApplied(uc),
+				}
+				// Handle nested upstream calls recursively
+				if len(uc.UpstreamCalls) > 0 {
+					nestedResult.UpstreamCalls = convertUpstreamCalls(uc.UpstreamCalls)
+				}
+				result.UpstreamCalls = append(result.UpstreamCalls, nestedResult)
+			}
+		}
+	}
+
+	// Handle error case
 	if err != nil {
 		result.Error = err.Error()
-		result.Code = 500 // Map gRPC error to HTTP 500
+		if result.Code == 0 {
+			result.Code = 500 // Map gRPC error to HTTP 500 if no code from response
+		}
 		return result
 	}
 
-	// Use the actual code from the response (could be 200, 500, etc.)
-	result.Code = int(resp.Code)
-	result.BehaviorsApplied = resp.BehaviorsApplied
-
-	// Add gRPC status code attributes
+	// Add gRPC status code attributes for success
 	span.SetAttributes(semconv.RPCGRPCStatusCodeKey.Int(0)) // 0 = OK
-
-	// Convert nested gRPC upstream calls to Result
-	if len(resp.UpstreamCalls) > 0 {
-		for _, uc := range resp.UpstreamCalls {
-			duration, _ := time.ParseDuration(uc.Duration)
-			// Recursively convert nested calls
-			nestedResult := Result{
-				Name:             uc.Name,
-				URL:              uc.Uri,
-				Protocol:         uc.Protocol,
-				Duration:         duration,
-				Code:             int(uc.Code),
-				Error:            uc.Error,
-				BehaviorsApplied: convertBehaviorsApplied(uc),
-			}
-			// Handle nested upstream calls recursively
-			if len(uc.UpstreamCalls) > 0 {
-				nestedResult.UpstreamCalls = convertUpstreamCalls(uc.UpstreamCalls)
-			}
-			result.UpstreamCalls = append(result.UpstreamCalls, nestedResult)
-		}
-	}
 
 	return result
 }

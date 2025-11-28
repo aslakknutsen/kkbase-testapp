@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"embed"
 	"fmt"
+	"log"
 	"strings"
 	"text/template"
 
@@ -358,11 +359,12 @@ func (g *Generator) getEnvVars(svc *types.ServiceConfig) []envVarData {
 }
 
 func (g *Generator) buildUpstreamsEnv(svc *types.ServiceConfig) string {
-	// Consolidate upstreams by name to handle multiple entries with different paths
-	upstreamMap := make(map[string]struct {
-		url   string
-		paths []string
-	})
+	// Check if caller service is gRPC-only (for validation warnings)
+	callerIsGRPCOnly := svc.HasGRPC() && !svc.HasHTTP()
+
+	// Build upstream entries - each upstream entry is separate (no consolidation)
+	// This allows multiple entries to the same service with different paths
+	var parts []string
 
 	for _, upstream := range svc.Upstreams {
 		// Find the upstream service
@@ -370,7 +372,7 @@ func (g *Generator) buildUpstreamsEnv(svc *types.ServiceConfig) string {
 			if target.Name == upstream.Name {
 				protocol := "http"
 				port := target.Ports.HTTP
-				
+
 				// For dual-protocol services, use unified HTTP port
 				if target.HasHTTP() && target.HasGRPC() {
 					// Unified port mode: always use HTTP port
@@ -382,32 +384,38 @@ func (g *Generator) buildUpstreamsEnv(svc *types.ServiceConfig) string {
 					port = target.Ports.GRPC
 				}
 				// HTTP-only services already default to HTTP protocol and port
-				
+
+				// Validation warnings
+				targetIsGRPCOnly := target.HasGRPC() && !target.HasHTTP()
+
+				if callerIsGRPCOnly && len(upstream.Match) > 0 {
+					log.Printf("WARNING: Service %q is gRPC-only but upstream %q has 'match' configured. "+
+						"gRPC services don't receive HTTP paths, so 'match' will be ignored.", svc.Name, upstream.Name)
+				}
+				if targetIsGRPCOnly && upstream.Path != "" {
+					log.Printf("WARNING: Upstream %q is gRPC-only but has 'path' configured. "+
+						"gRPC ignores paths, so 'path' will be ignored.", upstream.Name)
+				}
+
 				url := fmt.Sprintf("%s://%s.%s.svc.cluster.local:%d",
 					protocol, target.Name, target.Namespace, port)
 
-				// Consolidate paths for the same upstream
-				entry := upstreamMap[upstream.Name]
-				entry.url = url
-				entry.paths = append(entry.paths, upstream.Paths...)
-				upstreamMap[upstream.Name] = entry
+				// Build upstream string: name=url[:match=/a,/b][:path=/forward]
+				upstreamStr := fmt.Sprintf("%s=%s", upstream.Name, url)
+				if len(upstream.Match) > 0 {
+					upstreamStr += ":match=" + strings.Join(upstream.Match, ",")
+				}
+				if upstream.Path != "" {
+					upstreamStr += ":path=" + upstream.Path
+				}
+
+				parts = append(parts, upstreamStr)
 				break
 			}
 		}
 	}
 
-	// Build the environment variable string
-	var parts []string
-	for name, entry := range upstreamMap {
-		if len(entry.paths) > 0 {
-			pathsStr := strings.Join(entry.paths, ",")
-			parts = append(parts, fmt.Sprintf("%s=%s:%s", name, entry.url, pathsStr))
-		} else {
-			parts = append(parts, fmt.Sprintf("%s=%s", name, entry.url))
-		}
-	}
-
-	// Use | as delimiter to support commas in path lists
+	// Use | as delimiter to support commas in match lists
 	return strings.Join(parts, "|")
 }
 

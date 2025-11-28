@@ -43,6 +43,10 @@ type Metrics struct {
 	HTTPClientRequestDuration *prometheus.HistogramVec
 	HTTPClientActiveRequests  *prometheus.GaugeVec
 
+	// gRPC Server metrics (application-level, supplements grpc_prometheus)
+	GRPCServerRequestsTotal   *prometheus.CounterVec
+	GRPCServerRequestDuration *prometheus.HistogramVec
+
 	// Custom behavior metrics
 	BehaviorAppliedTotal *prometheus.CounterVec
 }
@@ -228,6 +232,23 @@ func initMetrics() *Metrics {
 			[]string{"destination_service"},
 		),
 
+		// gRPC Server metrics (application-level, captures actual response codes)
+		GRPCServerRequestsTotal: promauto.NewCounterVec(
+			prometheus.CounterOpts{
+				Name: "grpc_server_requests_total",
+				Help: "Total number of gRPC server requests by response code",
+			},
+			[]string{"method", "response_code"},
+		),
+		GRPCServerRequestDuration: promauto.NewHistogramVec(
+			prometheus.HistogramOpts{
+				Name:    "grpc_server_request_duration_seconds",
+				Help:    "gRPC server request duration in seconds",
+				Buckets: prometheus.DefBuckets,
+			},
+			[]string{"method", "response_code"},
+		),
+
 		// Custom behavior metrics
 		BehaviorAppliedTotal: promauto.NewCounterVec(
 			prometheus.CounterOpts{
@@ -260,6 +281,29 @@ func (t *Telemetry) RecordRequest(method, path string, statusCode int, duration 
 			method,
 			path,
 			statusCodeStr,
+		).Observe(duration.Seconds())
+	}
+}
+
+// RecordGRPCRequest records metrics for a gRPC server request (application-level)
+func (t *Telemetry) RecordGRPCRequest(method string, responseCode int, duration time.Duration) {
+	if t.Metrics == nil {
+		return
+	}
+
+	responseCodeStr := fmt.Sprintf("%d", responseCode)
+
+	if t.Metrics.GRPCServerRequestsTotal != nil {
+		t.Metrics.GRPCServerRequestsTotal.WithLabelValues(
+			method,
+			responseCodeStr,
+		).Inc()
+	}
+
+	if t.Metrics.GRPCServerRequestDuration != nil {
+		t.Metrics.GRPCServerRequestDuration.WithLabelValues(
+			method,
+			responseCodeStr,
 		).Observe(duration.Seconds())
 	}
 }

@@ -92,7 +92,7 @@ func (h *RequestHandler) ProcessRequest(reqCtx *RequestContext, protocol string)
 
 // CallUpstreams calls upstream services and returns the calls
 // This is called by the server after ProcessRequest if there's no early exit
-func (h *RequestHandler) CallUpstreams(ctx context.Context, behaviorStr string, matchedUpstreams map[string]*service.UpstreamConfig) ([]*pb.UpstreamCall, error) {
+func (h *RequestHandler) CallUpstreams(ctx context.Context, behaviorStr string, matchedUpstreams []*service.UpstreamConfig) ([]*pb.UpstreamCall, error) {
 	var calls []*pb.UpstreamCall
 
 	// If no upstreams configured, return empty
@@ -107,10 +107,32 @@ func (h *RequestHandler) CallUpstreams(ctx context.Context, behaviorStr string, 
 		upstreamsToCall = h.config.Upstreams
 	}
 
-	// Call each upstream
-	for name, upstream := range upstreamsToCall {
+	// Call each upstream (fail-fast: stop on first failure)
+	for _, upstream := range upstreamsToCall {
+		name := upstream.Name
+		// Build upstream config with path appended to URL (for HTTP upstreams)
+		upstreamWithPath := upstream
+		if upstream.Protocol == "http" && upstream.Path != "" {
+			upstreamWithPath = &service.UpstreamConfig{
+				Name:     upstream.Name,
+				URL:      upstream.URL + upstream.Path,
+				Protocol: upstream.Protocol,
+				Match:    upstream.Match,
+				Path:     upstream.Path,
+			}
+		} else if upstream.Protocol == "http" && upstream.Path == "" {
+			// Default to "/" for HTTP upstreams without explicit path
+			upstreamWithPath = &service.UpstreamConfig{
+				Name:     upstream.Name,
+				URL:      upstream.URL + "/",
+				Protocol: upstream.Protocol,
+				Match:    upstream.Match,
+				Path:     "/",
+			}
+		}
+
 		// Use shared caller with behavior propagation
-		result := h.caller.Call(ctx, name, upstream, behaviorStr)
+		result := h.caller.Call(ctx, name, upstreamWithPath, behaviorStr)
 
 		// Convert to pb.UpstreamCall and record metrics
 		call := h.ResultToUpstreamCall(result)
@@ -123,6 +145,11 @@ func (h *RequestHandler) CallUpstreams(ctx context.Context, behaviorStr string, 
 		h.telemetry.RecordUpstreamCall(method, name, int(call.Code), result.Duration)
 
 		calls = append(calls, call)
+
+		// Fail-fast: stop on first failure (non-2xx response or error)
+		if call.Code >= 300 || call.Error != "" {
+			break
+		}
 	}
 
 	return calls, nil

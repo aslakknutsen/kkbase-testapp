@@ -25,7 +25,8 @@ type ProviderConfig struct {
 // UpstreamRoute defines an upstream service with optional path-based routing
 type UpstreamRoute struct {
 	Name  string   `yaml:"name"`
-	Paths []string `yaml:"paths,omitempty"` // Path prefixes this upstream handles (empty = match all)
+	Match []string `yaml:"match,omitempty"` // Incoming paths that trigger routing to this upstream (HTTP callers only)
+	Path  string   `yaml:"path,omitempty"`  // Explicit forward path to call on upstream (HTTP upstreams only), defaults to "/"
 }
 
 // ServiceConfig defines a service
@@ -300,18 +301,19 @@ func (s *ServiceConfig) UnmarshalYAML(unmarshal func(interface{}) error) error {
 				// Check first element to determine format
 				switch v[0].(type) {
 				case string:
-					// Old format: []string
+					// Simple format: []string (just upstream names)
 					s.Upstreams = make([]UpstreamRoute, 0, len(v))
 					for _, item := range v {
 						if str, ok := item.(string); ok {
 							s.Upstreams = append(s.Upstreams, UpstreamRoute{
 								Name:  str,
-								Paths: nil,
+								Match: nil,
+								Path:  "",
 							})
 						}
 					}
 				case map[string]interface{}:
-					// New format: []UpstreamRoute
+					// Full format: []UpstreamRoute with match/path
 					s.Upstreams = make([]UpstreamRoute, 0, len(v))
 					for _, item := range v {
 						if m, ok := item.(map[string]interface{}); ok {
@@ -319,13 +321,16 @@ func (s *ServiceConfig) UnmarshalYAML(unmarshal func(interface{}) error) error {
 							if name, ok := m["name"].(string); ok {
 								route.Name = name
 							}
-							if paths, ok := m["paths"].([]interface{}); ok {
-								route.Paths = make([]string, 0, len(paths))
-								for _, p := range paths {
+							if match, ok := m["match"].([]interface{}); ok {
+								route.Match = make([]string, 0, len(match))
+								for _, p := range match {
 									if pathStr, ok := p.(string); ok {
-										route.Paths = append(route.Paths, pathStr)
+										route.Match = append(route.Match, pathStr)
 									}
 								}
+							}
+							if path, ok := m["path"].(string); ok {
+								route.Path = path
 							}
 							s.Upstreams = append(s.Upstreams, route)
 						}

@@ -7,18 +7,18 @@ import (
 )
 
 func TestPathRouter_Match(t *testing.T) {
-	upstreams := map[string]*service.UpstreamConfig{
-		"api": {
+	upstreams := []*service.UpstreamConfig{
+		{
 			Name:  "api",
-			Paths: []string{"/api"},
+			Match: []string{"/api"},
 		},
-		"web": {
+		{
 			Name:  "web",
-			Paths: []string{"/web", "/assets"},
+			Match: []string{"/web", "/assets"},
 		},
-		"catch-all": {
+		{
 			Name:  "catch-all",
-			Paths: nil, // Catch-all
+			Match: nil, // Catch-all
 		},
 	}
 
@@ -54,14 +54,22 @@ func TestPathRouter_Match(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			matched := router.Match(tt.path)
-			
+
 			if len(matched) != len(tt.expectMatches) {
 				t.Errorf("Expected %d matches, got %d", len(tt.expectMatches), len(matched))
 			}
 
-			for _, name := range tt.expectMatches {
-				if _, ok := matched[name]; !ok {
-					t.Errorf("Expected %s to match, but didn't", name)
+			// Check that all expected names are in the matched slice
+			for _, expectedName := range tt.expectMatches {
+				found := false
+				for _, m := range matched {
+					if m.Name == expectedName {
+						found = true
+						break
+					}
+				}
+				if !found {
+					t.Errorf("Expected %s to match, but didn't", expectedName)
 				}
 			}
 		})
@@ -69,10 +77,10 @@ func TestPathRouter_Match(t *testing.T) {
 }
 
 func TestPathRouter_NoMatch(t *testing.T) {
-	upstreams := map[string]*service.UpstreamConfig{
-		"api": {
+	upstreams := []*service.UpstreamConfig{
+		{
 			Name:  "api",
-			Paths: []string{"/api"},
+			Match: []string{"/api"},
 		},
 	}
 
@@ -84,27 +92,42 @@ func TestPathRouter_NoMatch(t *testing.T) {
 	}
 }
 
-func TestPathRouter_StripPrefix(t *testing.T) {
-	upstream := &service.UpstreamConfig{
-		Name:  "api",
-		Paths: []string{"/api/v1", "/api"},
-	}
-
+func TestPathRouter_GetForwardPath(t *testing.T) {
 	router := NewPathRouter(nil)
 
 	tests := []struct {
-		path     string
+		name     string
+		upstream *service.UpstreamConfig
 		expected string
 	}{
-		{"/api/v1/users", "/users"},   // Longest match
-		{"/api/users", "/users"},      // Shorter match
-		{"/api", "/"},                 // Exact match
-		{"/other", "/other"},          // No match, return as-is
+		{
+			name: "explicit path",
+			upstream: &service.UpstreamConfig{
+				Name: "api",
+				Path: "/v2/api",
+			},
+			expected: "/v2/api",
+		},
+		{
+			name: "empty path defaults to /",
+			upstream: &service.UpstreamConfig{
+				Name: "api",
+				Path: "",
+			},
+			expected: "/",
+		},
+		{
+			name: "nil upstream path defaults to /",
+			upstream: &service.UpstreamConfig{
+				Name: "api",
+			},
+			expected: "/",
+		},
 	}
 
 	for _, tt := range tests {
-		t.Run(tt.path, func(t *testing.T) {
-			result := router.StripPrefix(tt.path, upstream)
+		t.Run(tt.name, func(t *testing.T) {
+			result := router.GetForwardPath(tt.upstream)
 			if result != tt.expected {
 				t.Errorf("Expected %s, got %s", tt.expected, result)
 			}
@@ -112,34 +135,20 @@ func TestPathRouter_StripPrefix(t *testing.T) {
 	}
 }
 
-func TestPathRouter_StripPrefix_NoPaths(t *testing.T) {
-	upstream := &service.UpstreamConfig{
-		Name:  "catch-all",
-		Paths: nil, // No paths configured
-	}
-
-	router := NewPathRouter(nil)
-	result := router.StripPrefix("/api/users", upstream)
-
-	if result != "/api/users" {
-		t.Errorf("Expected path unchanged for catch-all upstream, got %s", result)
-	}
-}
-
 func TestPathRouter_HasUpstreams(t *testing.T) {
 	tests := []struct {
 		name      string
-		upstreams map[string]*service.UpstreamConfig
+		upstreams []*service.UpstreamConfig
 		expected  bool
 	}{
 		{
 			name:      "has upstreams",
-			upstreams: map[string]*service.UpstreamConfig{"api": {Name: "api"}},
+			upstreams: []*service.UpstreamConfig{{Name: "api"}},
 			expected:  true,
 		},
 		{
 			name:      "no upstreams",
-			upstreams: map[string]*service.UpstreamConfig{},
+			upstreams: []*service.UpstreamConfig{},
 			expected:  false,
 		},
 		{
@@ -161,7 +170,7 @@ func TestPathRouter_HasUpstreams(t *testing.T) {
 }
 
 func TestPathRouter_EmptyUpstreams(t *testing.T) {
-	router := NewPathRouter(map[string]*service.UpstreamConfig{})
+	router := NewPathRouter([]*service.UpstreamConfig{})
 
 	matched := router.Match("/any")
 	if matched != nil {
@@ -182,17 +191,17 @@ func TestNoOpRouter(t *testing.T) {
 	}
 
 	upstream := &service.UpstreamConfig{Name: "test"}
-	stripped := router.StripPrefix("/api/users", upstream)
-	if stripped != "/api/users" {
-		t.Errorf("NoOpRouter should return path unchanged, got %s", stripped)
+	forwardPath := router.GetForwardPath(upstream)
+	if forwardPath != "/" {
+		t.Errorf("NoOpRouter should return / as forward path, got %s", forwardPath)
 	}
 }
 
 func TestPathRouter_MultiplePathsPerUpstream(t *testing.T) {
-	upstreams := map[string]*service.UpstreamConfig{
-		"content": {
+	upstreams := []*service.UpstreamConfig{
+		{
 			Name:  "content",
-			Paths: []string{"/blog", "/news", "/articles"},
+			Match: []string{"/blog", "/news", "/articles"},
 		},
 	}
 
@@ -204,37 +213,72 @@ func TestPathRouter_MultiplePathsPerUpstream(t *testing.T) {
 		if len(matched) != 1 {
 			t.Errorf("Expected 1 match for %s, got %d", path, len(matched))
 		}
-		if _, ok := matched["content"]; !ok {
+		if matched[0].Name != "content" {
 			t.Errorf("Expected content to match for %s", path)
 		}
 	}
 }
 
-func TestPathRouter_LongestPrefixWins(t *testing.T) {
-	upstream := &service.UpstreamConfig{
-		Name:  "api",
-		Paths: []string{"/api", "/api/v1", "/api/v2"},
+func TestPathRouter_MatchWithExplicitPath(t *testing.T) {
+	upstreams := []*service.UpstreamConfig{
+		{
+			Name:  "api-v2",
+			Match: []string{"/api/v1"},
+			Path:  "/v2",
+		},
 	}
 
-	router := NewPathRouter(nil)
+	router := NewPathRouter(upstreams)
 
-	tests := []struct {
-		path     string
-		expected string
-		desc     string
-	}{
-		{"/api/v1/users", "/users", "v1 prefix is longest"},
-		{"/api/v2/products", "/products", "v2 prefix is longest"},
-		{"/api/other", "/other", "only api prefix matches"},
+	// Should match
+	matched := router.Match("/api/v1/users")
+	if len(matched) != 1 {
+		t.Errorf("Expected 1 match, got %d", len(matched))
 	}
 
-	for _, tt := range tests {
-		t.Run(tt.desc, func(t *testing.T) {
-			result := router.StripPrefix(tt.path, upstream)
-			if result != tt.expected {
-				t.Errorf("Expected %s, got %s", tt.expected, result)
-			}
-		})
+	// Forward path should be explicit
+	forwardPath := router.GetForwardPath(matched[0])
+	if forwardPath != "/v2" {
+		t.Errorf("Expected forward path /v2, got %s", forwardPath)
 	}
 }
 
+func TestPathRouter_MultipleSameNameUpstreams(t *testing.T) {
+	// Test that multiple upstreams with the same name but different matches work
+	upstreams := []*service.UpstreamConfig{
+		{
+			Name:  "notification",
+			Match: []string{"/events/OrderCreated"},
+		},
+		{
+			Name:  "notification",
+			Match: []string{"/events/PaymentProcessed"},
+		},
+	}
+
+	router := NewPathRouter(upstreams)
+
+	// Should match first notification
+	matched := router.Match("/events/OrderCreated")
+	if len(matched) != 1 {
+		t.Errorf("Expected 1 match, got %d", len(matched))
+	}
+	if matched[0].Name != "notification" {
+		t.Errorf("Expected notification to match")
+	}
+
+	// Should match second notification
+	matched = router.Match("/events/PaymentProcessed")
+	if len(matched) != 1 {
+		t.Errorf("Expected 1 match, got %d", len(matched))
+	}
+	if matched[0].Name != "notification" {
+		t.Errorf("Expected notification to match")
+	}
+
+	// Should not match unknown
+	matched = router.Match("/events/Unknown")
+	if matched != nil {
+		t.Error("Expected no match for unknown event")
+	}
+}

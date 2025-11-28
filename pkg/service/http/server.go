@@ -155,30 +155,36 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	s.sendResponse(w, r, resp, 200, span, start)
 }
 
-// callMatchedUpstreams calls the matched upstreams with path stripping
-func (s *Server) callMatchedUpstreams(ctx context.Context, upstreams map[string]*service.UpstreamConfig, requestPath string, behaviorStr string) []*pb.UpstreamCall {
+// callMatchedUpstreams calls the matched upstreams with explicit forward paths (fail-fast)
+func (s *Server) callMatchedUpstreams(ctx context.Context, upstreams []*service.UpstreamConfig, requestPath string, behaviorStr string) []*pb.UpstreamCall {
 	var calls []*pb.UpstreamCall
 
-	for name, upstream := range upstreams {
-		// Strip matched prefix from path using router
-		forwardPath := s.router.StripPrefix(requestPath, upstream)
+	for _, upstream := range upstreams {
+		// Get the explicit forward path (or "/" if not set)
+		forwardPath := s.router.GetForwardPath(upstream)
 
 		// Update upstream URL to include the path
 		upstreamWithPath := &service.UpstreamConfig{
 			Name:     upstream.Name,
 			URL:      upstream.URL + forwardPath,
 			Protocol: upstream.Protocol,
-			Paths:    upstream.Paths,
+			Match:    upstream.Match,
+			Path:     upstream.Path,
 		}
 
 		// Use shared caller with behavior propagation
-		result := s.caller.Call(ctx, name, upstreamWithPath, behaviorStr)
+		result := s.caller.Call(ctx, upstream.Name, upstreamWithPath, behaviorStr)
 
 		// Convert to pb.UpstreamCall using handler's method
 		call := s.handler.ResultToUpstreamCall(result)
-		s.telemetry.RecordUpstreamCall("GET", name, int(call.Code), result.Duration)
+		s.telemetry.RecordUpstreamCall("GET", upstream.Name, int(call.Code), result.Duration)
 
 		calls = append(calls, call)
+
+		// Fail-fast: stop on first failure (non-2xx response or error)
+		if call.Code >= 300 || call.Error != "" {
+			break
+		}
 	}
 
 	return calls

@@ -27,7 +27,7 @@ func createTestConfig() *service.Config {
 		GRPCPort:        9090,
 		MetricsPort:     9091,
 		DefaultBehavior: "",
-		Upstreams:       make(map[string]*service.UpstreamConfig),
+		Upstreams:       []*service.UpstreamConfig{},
 	}
 }
 
@@ -262,24 +262,24 @@ func TestCallUpstreams_NoUpstreams(t *testing.T) {
 
 func TestCallUpstreams_WithMatchedUpstreams(t *testing.T) {
 	cfg := createTestConfig()
-	cfg.Upstreams["service-b"] = &service.UpstreamConfig{
+	cfg.Upstreams = append(cfg.Upstreams, &service.UpstreamConfig{
 		Name:     "service-b",
 		URL:      "http://localhost:8081",
 		Protocol: "http",
-	}
-	cfg.Upstreams["service-c"] = &service.UpstreamConfig{
+	})
+	cfg.Upstreams = append(cfg.Upstreams, &service.UpstreamConfig{
 		Name:     "service-c",
 		URL:      "http://localhost:8082",
 		Protocol: "http",
-	}
+	})
 	
 	tel := createTestTelemetry()
 	caller := client.NewCaller(tel)
 	handler := NewRequestHandler(cfg, caller, tel)
 
 	// Only service-b is matched
-	matchedUpstreams := map[string]*service.UpstreamConfig{
-		"service-b": cfg.Upstreams["service-b"],
+	matchedUpstreams := []*service.UpstreamConfig{
+		cfg.Upstreams[0], // service-b
 	}
 
 	calls, err := handler.CallUpstreams(context.Background(), "", matchedUpstreams)
@@ -401,4 +401,3 @@ func TestBuildUpstreamErrorResponse(t *testing.T) {
 		t.Error("Expected error message in body")
 	}
 }
-

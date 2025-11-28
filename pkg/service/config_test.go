@@ -5,6 +5,17 @@ import (
 	"testing"
 )
 
+// findUpstreamByName finds an upstream by name in the slice
+// Returns nil if not found
+func findUpstreamByName(upstreams []*UpstreamConfig, name string) *UpstreamConfig {
+	for _, u := range upstreams {
+		if u.Name == name {
+			return u
+		}
+	}
+	return nil
+}
+
 func TestLoadConfigFromEnv_UpstreamsParsing(t *testing.T) {
 	tests := []struct {
 		name              string
@@ -12,131 +23,178 @@ func TestLoadConfigFromEnv_UpstreamsParsing(t *testing.T) {
 		expectedUpstreams map[string]struct {
 			url      string
 			protocol string
-			paths    []string
+			match    []string
+			path     string
 		}
 	}{
 		{
-			name:         "simple http URL without paths",
+			name:         "simple http URL without match or path",
 			upstreamsEnv: "payment=http://payment.payments.svc.cluster.local:8080",
 			expectedUpstreams: map[string]struct {
 				url      string
 				protocol string
-				paths    []string
+				match    []string
+				path     string
 			}{
 				"payment": {
 					url:      "http://payment.payments.svc.cluster.local:8080",
 					protocol: "http",
-					paths:    nil,
+					match:    nil,
+					path:     "",
 				},
 			},
 		},
 		{
-			name:         "simple grpc URL without paths",
+			name:         "simple grpc URL without match or path",
 			upstreamsEnv: "payment=grpc://payment.payments.svc.cluster.local:9090",
 			expectedUpstreams: map[string]struct {
 				url      string
 				protocol string
-				paths    []string
+				match    []string
+				path     string
 			}{
 				"payment": {
 					url:      "grpc://payment.payments.svc.cluster.local:9090",
 					protocol: "grpc",
-					paths:    nil,
+					match:    nil,
+					path:     "",
 				},
 			},
 		},
 		{
-			name:         "http URL with single path",
-			upstreamsEnv: "message-bus=http://message-bus.infra.svc.cluster.local:8080:/events/OrderCreated",
+			name:         "http URL with single match",
+			upstreamsEnv: "order-api=http://order-api.orders.svc.cluster.local:8080:match=/orders",
 			expectedUpstreams: map[string]struct {
 				url      string
 				protocol string
-				paths    []string
+				match    []string
+				path     string
+			}{
+				"order-api": {
+					url:      "http://order-api.orders.svc.cluster.local:8080",
+					protocol: "http",
+					match:    []string{"/orders"},
+					path:     "",
+				},
+			},
+		},
+		{
+			name:         "http URL with multiple matches",
+			upstreamsEnv: "order-api=http://order-api:8080:match=/orders,/cart,/checkout",
+			expectedUpstreams: map[string]struct {
+				url      string
+				protocol string
+				match    []string
+				path     string
+			}{
+				"order-api": {
+					url:      "http://order-api:8080",
+					protocol: "http",
+					match:    []string{"/orders", "/cart", "/checkout"},
+					path:     "",
+				},
+			},
+		},
+		{
+			name:         "http URL with path only",
+			upstreamsEnv: "message-bus=http://message-bus.infra.svc.cluster.local:8080:path=/events/OrderCreated",
+			expectedUpstreams: map[string]struct {
+				url      string
+				protocol string
+				match    []string
+				path     string
 			}{
 				"message-bus": {
 					url:      "http://message-bus.infra.svc.cluster.local:8080",
 					protocol: "http",
-					paths:    []string{"/events/OrderCreated"},
+					match:    nil,
+					path:     "/events/OrderCreated",
 				},
 			},
 		},
 		{
-			name:         "http URL with multiple paths - single upstream only",
-			upstreamsEnv: "message-bus=http://message-bus.infra.svc.cluster.local:8080:/events/OrderCreated,/events/OrderUpdated,/events/OrderCancelled",
+			name:         "http URL with both match and path",
+			upstreamsEnv: "api=http://api:8080:match=/api/v1:path=/v2",
 			expectedUpstreams: map[string]struct {
 				url      string
 				protocol string
-				paths    []string
+				match    []string
+				path     string
 			}{
-				"message-bus": {
-					url:      "http://message-bus.infra.svc.cluster.local:8080",
+				"api": {
+					url:      "http://api:8080",
 					protocol: "http",
-					paths:    []string{"/events/OrderCreated", "/events/OrderUpdated", "/events/OrderCancelled"},
+					match:    []string{"/api/v1"},
+					path:     "/v2",
 				},
 			},
 		},
 		{
-			name:         "multiple upstreams without paths",
+			name:         "multiple upstreams without match or path",
 			upstreamsEnv: "payment=grpc://payment:9090|inventory=grpc://inventory:9090|shipping=http://shipping:8080",
 			expectedUpstreams: map[string]struct {
 				url      string
 				protocol string
-				paths    []string
+				match    []string
+				path     string
 			}{
 				"payment": {
 					url:      "grpc://payment:9090",
 					protocol: "grpc",
-					paths:    nil,
+					match:    nil,
+					path:     "",
 				},
 				"inventory": {
 					url:      "grpc://inventory:9090",
 					protocol: "grpc",
-					paths:    nil,
+					match:    nil,
+					path:     "",
 				},
 				"shipping": {
 					url:      "http://shipping:8080",
 					protocol: "http",
-					paths:    nil,
+					match:    nil,
+					path:     "",
 				},
 			},
 		},
 		{
-			name:         "mixed upstreams with and without paths",
-			upstreamsEnv: "inventory=grpc://inventory.products.svc.cluster.local:9090|search=http://search.products.svc.cluster.local:8080|message-bus=http://message-bus.infra.svc.cluster.local:8080:/events/ProductUpdated,/events/PriceChanged",
+			name:         "mixed upstreams with match and path",
+			upstreamsEnv: "order-api=http://order:8080:match=/orders|message-bus=http://bus:8080:path=/events/Order",
 			expectedUpstreams: map[string]struct {
 				url      string
 				protocol string
-				paths    []string
+				match    []string
+				path     string
 			}{
-				"inventory": {
-					url:      "grpc://inventory.products.svc.cluster.local:9090",
-					protocol: "grpc",
-					paths:    nil,
-				},
-				"search": {
-					url:      "http://search.products.svc.cluster.local:8080",
+				"order-api": {
+					url:      "http://order:8080",
 					protocol: "http",
-					paths:    nil,
+					match:    []string{"/orders"},
+					path:     "",
 				},
 				"message-bus": {
-					url:      "http://message-bus.infra.svc.cluster.local:8080",
+					url:      "http://bus:8080",
 					protocol: "http",
-					paths:    []string{"/events/ProductUpdated", "/events/PriceChanged"},
+					match:    nil,
+					path:     "/events/Order",
 				},
 			},
 		},
 		{
-			name:         "paths with spaces get trimmed - single upstream",
-			upstreamsEnv: "api-gateway=http://api-gateway:8080:/api/v1/products, /api/v1/catalog",
+			name:         "match with spaces gets trimmed",
+			upstreamsEnv: "api-gateway=http://api-gateway:8080:match=/api/v1/products, /api/v1/catalog",
 			expectedUpstreams: map[string]struct {
 				url      string
 				protocol string
-				paths    []string
+				match    []string
+				path     string
 			}{
 				"api-gateway": {
 					url:      "http://api-gateway:8080",
 					protocol: "http",
-					paths:    []string{"/api/v1/products", "/api/v1/catalog"},
+					match:    []string{"/api/v1/products", "/api/v1/catalog"},
+					path:     "",
 				},
 			},
 		},
@@ -146,17 +204,20 @@ func TestLoadConfigFromEnv_UpstreamsParsing(t *testing.T) {
 			expectedUpstreams: map[string]struct {
 				url      string
 				protocol string
-				paths    []string
+				match    []string
+				path     string
 			}{
 				"product-api": {
 					url:      "product.svc",
 					protocol: "http", // defaults to http
-					paths:    nil,
+					match:    nil,
+					path:     "",
 				},
 				"cart-api": {
 					url:      "cart.svc",
 					protocol: "http",
-					paths:    nil,
+					match:    nil,
+					path:     "",
 				},
 			},
 		},
@@ -166,12 +227,14 @@ func TestLoadConfigFromEnv_UpstreamsParsing(t *testing.T) {
 			expectedUpstreams: map[string]struct {
 				url      string
 				protocol string
-				paths    []string
+				match    []string
+				path     string
 			}{
 				"web": {
 					url:      "http://web.frontend.svc.cluster.local",
 					protocol: "http",
-					paths:    nil,
+					match:    nil,
+					path:     "",
 				},
 			},
 		},
@@ -181,12 +244,14 @@ func TestLoadConfigFromEnv_UpstreamsParsing(t *testing.T) {
 			expectedUpstreams: map[string]struct {
 				url      string
 				protocol string
-				paths    []string
+				match    []string
+				path     string
 			}{
 				"custom": {
 					url:      "http://custom.svc.cluster.local:50051",
 					protocol: "http",
-					paths:    nil,
+					match:    nil,
+					path:     "",
 				},
 			},
 		},
@@ -211,8 +276,8 @@ func TestLoadConfigFromEnv_UpstreamsParsing(t *testing.T) {
 
 			// Verify each upstream
 			for name, expected := range tt.expectedUpstreams {
-				upstream, exists := cfg.Upstreams[name]
-				if !exists {
+				upstream := findUpstreamByName(cfg.Upstreams, name)
+				if upstream == nil {
 					t.Errorf("upstream %q not found", name)
 					continue
 				}
@@ -225,9 +290,14 @@ func TestLoadConfigFromEnv_UpstreamsParsing(t *testing.T) {
 					t.Errorf("upstream %q: expected protocol %q, got %q", name, expected.protocol, upstream.Protocol)
 				}
 
-				// Compare paths
-				if !stringSlicesEqual(upstream.Paths, expected.paths) {
-					t.Errorf("upstream %q: expected paths %v, got %v", name, expected.paths, upstream.Paths)
+				// Compare match
+				if !stringSlicesEqual(upstream.Match, expected.match) {
+					t.Errorf("upstream %q: expected match %v, got %v", name, expected.match, upstream.Match)
+				}
+
+				// Compare path
+				if upstream.Path != expected.path {
+					t.Errorf("upstream %q: expected path %q, got %q", name, expected.path, upstream.Path)
 				}
 			}
 		})
@@ -255,11 +325,6 @@ func TestLoadConfigFromEnv_EdgeCases(t *testing.T) {
 			upstreamsEnv:      "payment=",
 			expectUpstreamCnt: 0, // Should skip malformed entries
 		},
-		{
-			name:              "empty paths list",
-			upstreamsEnv:      "api=http://api:8080:",
-			expectUpstreamCnt: 1, // Should parse but with empty paths
-		},
 	}
 
 	for _, tt := range tests {
@@ -278,22 +343,26 @@ func TestLoadConfigFromEnv_EdgeCases(t *testing.T) {
 }
 
 func TestLoadConfigFromEnv_CriticalBugRegression(t *testing.T) {
-	// This test specifically checks the bug where port numbers were parsed as paths
-	t.Run("port number not treated as path", func(t *testing.T) {
+	// This test specifically checks the bug where port numbers were parsed incorrectly
+	t.Run("port number not treated as match or path", func(t *testing.T) {
 		os.Clearenv()
 		os.Setenv("UPSTREAMS", "payment=grpc://payment.sf-payments.svc.cluster.local:9090")
 		os.Setenv("SERVICE_NAME", "order-management")
 
 		cfg := LoadConfigFromEnv()
 
-		upstream, exists := cfg.Upstreams["payment"]
-		if !exists {
+		upstream := findUpstreamByName(cfg.Upstreams, "payment")
+		if upstream == nil {
 			t.Fatal("payment upstream not found")
 		}
 
-		// The bug: port "9090" was being parsed as a path
-		if len(upstream.Paths) != 0 {
-			t.Errorf("BUG REGRESSION: port number parsed as path! Expected empty paths, got %v", upstream.Paths)
+		// The bug: port "9090" was being parsed incorrectly
+		if len(upstream.Match) != 0 {
+			t.Errorf("BUG REGRESSION: port number parsed as match! Expected empty match, got %v", upstream.Match)
+		}
+
+		if upstream.Path != "" {
+			t.Errorf("BUG REGRESSION: port number parsed as path! Expected empty path, got %q", upstream.Path)
 		}
 
 		if upstream.URL != "grpc://payment.sf-payments.svc.cluster.local:9090" {
@@ -301,28 +370,87 @@ func TestLoadConfigFromEnv_CriticalBugRegression(t *testing.T) {
 		}
 	})
 
+	t.Run("match after port correctly identified", func(t *testing.T) {
+		os.Clearenv()
+		os.Setenv("UPSTREAMS", "order-api=http://order-api:8080:match=/orders")
+		os.Setenv("SERVICE_NAME", "api-gateway")
+
+		cfg := LoadConfigFromEnv()
+
+		upstream := findUpstreamByName(cfg.Upstreams, "order-api")
+		if upstream == nil {
+			t.Fatal("order-api upstream not found")
+		}
+
+		if len(upstream.Match) != 1 {
+			t.Errorf("expected 1 match, got %d", len(upstream.Match))
+		}
+
+		if len(upstream.Match) > 0 && upstream.Match[0] != "/orders" {
+			t.Errorf("expected match /orders, got %q", upstream.Match[0])
+		}
+
+		if upstream.URL != "http://order-api:8080" {
+			t.Errorf("URL should not include match: got %q", upstream.URL)
+		}
+	})
+
 	t.Run("path after port correctly identified", func(t *testing.T) {
 		os.Clearenv()
-		os.Setenv("UPSTREAMS", "message-bus=http://message-bus:8080:/events/OrderCreated")
+		os.Setenv("UPSTREAMS", "message-bus=http://message-bus:8080:path=/events/OrderCreated")
 		os.Setenv("SERVICE_NAME", "order-management")
 
 		cfg := LoadConfigFromEnv()
 
-		upstream, exists := cfg.Upstreams["message-bus"]
-		if !exists {
+		upstream := findUpstreamByName(cfg.Upstreams, "message-bus")
+		if upstream == nil {
 			t.Fatal("message-bus upstream not found")
 		}
 
-		if len(upstream.Paths) != 1 {
-			t.Errorf("expected 1 path, got %d", len(upstream.Paths))
-		}
-
-		if len(upstream.Paths) > 0 && upstream.Paths[0] != "/events/OrderCreated" {
-			t.Errorf("expected path /events/OrderCreated, got %q", upstream.Paths[0])
+		if upstream.Path != "/events/OrderCreated" {
+			t.Errorf("expected path /events/OrderCreated, got %q", upstream.Path)
 		}
 
 		if upstream.URL != "http://message-bus:8080" {
 			t.Errorf("URL should not include path: got %q", upstream.URL)
+		}
+	})
+}
+
+func TestLoadConfigFromEnv_MultipleSameNameUpstreams(t *testing.T) {
+	// Test that multiple upstreams with the same name are preserved (not overwritten)
+	t.Run("multiple same-name upstreams preserved", func(t *testing.T) {
+		os.Clearenv()
+		os.Setenv("UPSTREAMS", "notification=http://notification:8080:match=/events/Order|notification=http://notification:8080:match=/events/Payment")
+		os.Setenv("SERVICE_NAME", "message-bus")
+
+		cfg := LoadConfigFromEnv()
+
+		// Should have 2 upstreams, not 1
+		if len(cfg.Upstreams) != 2 {
+			t.Errorf("expected 2 upstreams, got %d (same-name upstreams were overwritten)", len(cfg.Upstreams))
+		}
+
+		// Both should be named "notification"
+		for _, u := range cfg.Upstreams {
+			if u.Name != "notification" {
+				t.Errorf("expected name 'notification', got %q", u.Name)
+			}
+		}
+
+		// Should have different matches
+		matches := make(map[string]bool)
+		for _, u := range cfg.Upstreams {
+			if len(u.Match) > 0 {
+				matches[u.Match[0]] = true
+			}
+		}
+
+		if !matches["/events/Order"] {
+			t.Error("expected /events/Order match")
+		}
+		if !matches["/events/Payment"] {
+			t.Error("expected /events/Payment match")
 		}
 	})
 }

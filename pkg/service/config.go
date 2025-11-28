@@ -21,8 +21,8 @@ type Config struct {
 	GRPCPort    int
 	MetricsPort int
 
-	// Upstream services
-	Upstreams map[string]*UpstreamConfig
+	// Upstream services (slice to support multiple entries with same name)
+	Upstreams []*UpstreamConfig
 
 	// Default behavior
 	DefaultBehavior string
@@ -40,7 +40,8 @@ type UpstreamConfig struct {
 	Name     string
 	URL      string
 	Protocol string   // "http" or "grpc"
-	Paths    []string // Path prefixes this upstream handles (empty = match all)
+	Match    []string // Incoming paths that trigger routing to this upstream (empty = match all)
+	Path     string   // Explicit forward path to call on upstream (empty = "/")
 }
 
 // LoadConfigFromEnv loads configuration from environment variables
@@ -58,20 +59,22 @@ func LoadConfigFromEnv() *Config {
 		OTELEndpoint:    getEnv("OTEL_EXPORTER_OTLP_ENDPOINT", ""),
 		LogLevel:        getEnv("LOG_LEVEL", "info"),
 		ClientTimeout:   time.Duration(getEnvInt("CLIENT_TIMEOUT_MS", 30000)) * time.Millisecond,
-		Upstreams:       make(map[string]*UpstreamConfig),
+		Upstreams:       []*UpstreamConfig{},
 	}
 
-	// Parse upstreams: name=url:path1,path2|name2=url2
-	// Format: name=protocol://host:port or name=protocol://host:port:path1,path2
+	// Parse upstreams: name=url:match=/a,/b:path=/forward|name2=url2
+	// Format: name=protocol://host:port[:match=/a,/b][:path=/forward]
 	// Examples:
 	//   - product-api=http://product.ns.svc.cluster.local:8080
-	//   - order-api=http://order.ns.svc.cluster.local:8080:/orders,/cart
-	// Old format (backward compat): name:url (no = sign, no colons in URL)
+	//   - order-api=http://order.ns.svc.cluster.local:8080:match=/orders,/cart
+	//   - message-bus=http://message-bus.ns.svc.cluster.local:8080:path=/events/OrderCreated
+	//   - gateway=http://gateway:8080:match=/api:path=/v2/api
+	// Old format (backward compat): name:url (no = sign)
 	upstreamsStr := os.Getenv("UPSTREAMS")
 	if upstreamsStr != "" {
 		// Determine delimiter:
-		// - New format (with =): Use | to separate multiple upstreams, allows commas in paths
-		// - Old format (with : only): Use , to separate upstreams, no path support
+		// - New format (with =): Use | to separate multiple upstreams
+		// - Old format (with : only): Use , to separate upstreams
 		delimiter := "|"
 		isNewFormat := strings.Contains(upstreamsStr, "=")
 
@@ -89,56 +92,28 @@ func LoadConfigFromEnv() *Config {
 				continue
 			}
 
-			var name, url string
-			var paths []string
+			var name, url, path string
+			var match []string
 
 			// Check for new format (name=url) vs old format (name:url)
 			if strings.Contains(upstream, "=") {
-				// New format: name=url or name=url:paths
+				// New format: name=url[:match=...][:path=...]
 				eqIdx := strings.Index(upstream, "=")
 				name = upstream[:eqIdx]
 				rest := upstream[eqIdx+1:]
 
-				// Check if there are paths (colon after port number)
+				// Parse URL and optional match/path parameters
 				// URL format: protocol://host:port
-				// Paths format: protocol://host:port:/path1,/path2
-				// Strategy: Find last colon, check if what follows is a path (starts with /)
-				colonIdx := strings.LastIndex(rest, ":")
-				if colonIdx > 0 && !strings.HasPrefix(rest[colonIdx:], "://") {
-					// Check if this is a path separator (next char is /) or port number (next char is digit)
-					afterColon := rest[colonIdx+1:]
-					if len(afterColon) > 0 && afterColon[0] == '/' {
-						// This is a paths separator
-						url = rest[:colonIdx]
-						pathsStr := afterColon
-						for _, p := range strings.Split(pathsStr, ",") {
-							if trimmed := strings.TrimSpace(p); trimmed != "" {
-								paths = append(paths, trimmed)
-							}
-						}
-					} else {
-						// This is a port number, no paths
-						url = rest
-					}
-				} else {
-					// No colon or colon is part of ://, no paths
-					url = rest
-				}
+				// Full format: protocol://host:port:match=/a,/b:path=/forward
+				url, match, path = parseUpstreamParams(rest)
 			} else {
-				// Old format: name:url or name:url:paths
-				parts := strings.SplitN(upstream, ":", 3)
+				// Old format: name:url
+				parts := strings.SplitN(upstream, ":", 2)
 				if len(parts) < 2 {
 					continue
 				}
 				name = parts[0]
 				url = parts[1]
-				if len(parts) == 3 && parts[2] != "" {
-					for _, p := range strings.Split(parts[2], ",") {
-						if trimmed := strings.TrimSpace(p); trimmed != "" {
-							paths = append(paths, trimmed)
-						}
-					}
-				}
 			}
 
 			// Skip malformed entries
@@ -151,12 +126,13 @@ func LoadConfigFromEnv() *Config {
 				protocol = "grpc"
 			}
 
-			cfg.Upstreams[name] = &UpstreamConfig{
+			cfg.Upstreams = append(cfg.Upstreams, &UpstreamConfig{
 				Name:     name,
 				URL:      url,
 				Protocol: protocol,
-				Paths:    paths,
-			}
+				Match:    match,
+				Path:     path,
+			})
 		}
 	}
 
@@ -178,4 +154,77 @@ func getEnvInt(key string, defaultValue int) int {
 		}
 	}
 	return defaultValue
+}
+
+// parseUpstreamParams parses URL and optional match/path from upstream string
+// Format: protocol://host:port[:match=/a,/b][:path=/forward]
+func parseUpstreamParams(s string) (url string, match []string, path string) {
+	// Find where URL ends (after port number)
+	// URL format: protocol://host:port
+	// We need to find the port, then check for :match= or :path= after
+
+	// Find the :// in the protocol
+	protoEnd := strings.Index(s, "://")
+	if protoEnd == -1 {
+		return s, nil, ""
+	}
+
+	// Find the next colon after ://, which should be the port
+	afterProto := s[protoEnd+3:]
+	portColonIdx := strings.Index(afterProto, ":")
+	if portColonIdx == -1 {
+		// No port specified, return whole string as URL
+		return s, nil, ""
+	}
+
+	// Find where the port number ends (either at :match=, :path=, or end of string)
+	portStart := protoEnd + 3 + portColonIdx + 1
+	portEnd := len(s)
+
+	// Look for :match= or :path= after the port
+	matchIdx := strings.Index(s[portStart:], ":match=")
+	pathIdx := strings.Index(s[portStart:], ":path=")
+
+	if matchIdx != -1 {
+		matchIdx += portStart
+	}
+	if pathIdx != -1 {
+		pathIdx += portStart
+	}
+
+	// Determine where URL ends
+	if matchIdx != -1 && (pathIdx == -1 || matchIdx < pathIdx) {
+		portEnd = matchIdx
+	} else if pathIdx != -1 {
+		portEnd = pathIdx
+	}
+
+	url = s[:portEnd]
+
+	// Parse match parameter
+	if matchIdx != -1 {
+		matchStart := matchIdx + len(":match=")
+		matchEnd := len(s)
+		if pathIdx != -1 && pathIdx > matchIdx {
+			matchEnd = pathIdx
+		}
+		matchStr := s[matchStart:matchEnd]
+		for _, p := range strings.Split(matchStr, ",") {
+			if trimmed := strings.TrimSpace(p); trimmed != "" {
+				match = append(match, trimmed)
+			}
+		}
+	}
+
+	// Parse path parameter
+	if pathIdx != -1 {
+		pathStart := pathIdx + len(":path=")
+		pathEnd := len(s)
+		if matchIdx != -1 && matchIdx > pathIdx {
+			pathEnd = matchIdx
+		}
+		path = strings.TrimSpace(s[pathStart:pathEnd])
+	}
+
+	return url, match, path
 }

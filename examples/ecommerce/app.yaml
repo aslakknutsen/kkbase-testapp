@@ -14,9 +14,9 @@ services:
     protocols: [http]
     upstreams:
       - name: order-api
-        paths: [/orders, /cart]
+        match: [/orders, /cart]
       - name: product-api
-        paths: [/products, /catalog]
+        match: [/products, /catalog]
     ingress:
       enabled: true
       host: shop.local

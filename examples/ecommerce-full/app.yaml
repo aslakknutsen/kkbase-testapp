@@ -36,19 +36,19 @@ services:
     protocols: [http]
     upstreams:
       - name: product-catalog
-        paths: [/api/v1/products, /api/v1/catalog]
+        match: [/api/v1/products, /api/v1/catalog]
       - name: search
-        paths: [/api/v1/search]
+        match: [/api/v1/search]
       - name: reviews
-        paths: [/api/v1/reviews]
+        match: [/api/v1/reviews]
       - name: user-management
-        paths: [/api/v1/account, /api/v1/users]
+        match: [/api/v1/account, /api/v1/users]
       - name: shopping-cart
-        paths: [/api/v1/cart]
+        match: [/api/v1/cart]
       - name: checkout
-        paths: [/api/v1/checkout]
+        match: [/api/v1/checkout]
       - name: order-management
-        paths: [/api/v1/orders]
+        match: [/api/v1/orders]
     ingress:
       enabled: true
       host: shopflow.local
@@ -83,7 +83,9 @@ services:
       - name: inventory
       - name: search
       - name: message-bus
-        paths: [/events/ProductUpdated, /events/PriceChanged]
+        path: /events/ProductUpdated
+      - name: message-bus
+        path: /events/PriceChanged
     behavior:
       latency: "15-50ms"
       errorRate: 0.01
@@ -119,7 +121,11 @@ services:
     protocols: [grpc]
     upstreams:
       - name: message-bus
-        paths: [/events/StockReserved, /events/StockReservationFailed, /events/StockLevelLow]
+        path: /events/StockReserved
+      - name: message-bus
+        path: /events/StockReservationFailed
+      - name: message-bus
+        path: /events/StockLevelLow
     behavior:
       latency: "10-40ms"
       errorRate: 0.008
@@ -263,7 +269,11 @@ services:
     protocols: [grpc]
     upstreams:
       - name: message-bus
-        paths: [/events/PaymentProcessed, /events/PaymentFailed, /events/PaymentRefunded]
+        path: /events/PaymentProcessed
+      - name: message-bus
+        path: /events/PaymentFailed
+      - name: message-bus
+        path: /events/PaymentRefunded
     behavior:
       latency: "50-200ms"
       errorRate: 0.005
@@ -289,17 +299,17 @@ services:
     protocols: [http]
     upstreams:
       # Event routing configuration - simulates async event delivery to notification service
-      # The message-bus acts as a fan-out to notification for all events
+      # The message-bus routes incoming events to notification service
       - name: notification
-        paths: [/events/OrderCreated, /events/OrderUpdated, /events/OrderCancelled]
+        match: [/events/OrderCreated, /events/OrderUpdated, /events/OrderCancelled]
       - name: notification
-        paths: [/events/PaymentProcessed, /events/PaymentFailed, /events/PaymentRefunded]
+        match: [/events/PaymentProcessed, /events/PaymentFailed, /events/PaymentRefunded]
       - name: notification
-        paths: [/events/StockReserved, /events/StockReservationFailed, /events/StockLevelLow]
+        match: [/events/StockReserved, /events/StockReservationFailed, /events/StockLevelLow]
       - name: notification
-        paths: [/events/OrderShipped, /events/OrderDelivered]
+        match: [/events/OrderShipped, /events/OrderDelivered]
       - name: notification
-        paths: [/events/ProductUpdated, /events/PriceChanged]
+        match: [/events/ProductUpdated, /events/PriceChanged]
     behavior:
       latency: "2-10ms"
       errorRate: 0.002

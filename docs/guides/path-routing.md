@@ -1,21 +1,34 @@
 # Path-Based Routing
 
-HTTP services support path-based routing to selectively call upstream services based on the incoming request URL path. This enables realistic simulation of frontend services routing to different backends.
+HTTP services support path-based routing to selectively call upstream services based on the incoming request URL path, and to specify explicit forward paths when calling upstreams.
 
 ## Overview
 
-Path-based routing allows a service to route requests to different upstream services based on URL paths, similar to API gateways and reverse proxies.
+Path-based routing uses two separate concepts:
+
+- **`match`**: Incoming paths that trigger routing to this upstream (HTTP callers only)
+- **`path`**: Explicit forward path to call on the upstream (HTTP upstreams only)
 
 **Features:**
-- Prefix matching - `/orders` matches `/orders`, `/orders/123`, `/orders/123/items`
-- Path stripping - Matched prefix removed before forwarding
-- Multiple matches - All matching upstreams are called
-- 404 on no match - Returns HTTP 404 if no upstream matches
-- Backward compatible - Services without path configuration call all upstreams
+- Prefix matching for `match` - `/orders` matches `/orders`, `/orders/123`, `/orders/123/items`
+- Explicit forward paths - call upstreams on specific paths regardless of incoming request
+- Multiple matches - all matching upstreams are called (fan-out)
+- 404 on no match - returns HTTP 404 if no upstream matches (when match rules exist)
+- Protocol-aware - validation warnings for incompatible configs
 
 ## DSL Configuration
 
-### With Path-Based Routing
+### Basic Upstream (No Path Routing)
+
+```yaml
+services:
+  - name: web
+    upstreams: [api, cache]  # Calls all upstreams on "/" for any request
+```
+
+### Match-Based Routing
+
+Route to different upstreams based on incoming request path:
 
 ```yaml
 services:
@@ -24,182 +37,246 @@ services:
     protocols: [http]
     upstreams:
       - name: order-api
-        paths: [/orders, /cart]
+        match: [/orders, /cart]
       - name: product-api
-        paths: [/products, /catalog]
+        match: [/products, /catalog]
       - name: user-api
-        paths: [/users, /auth]
-      - name: health-check  # No paths = matches all paths
+        match: [/users, /auth]
+      - name: health-check  # No match = called for all requests
 ```
 
-### Without Path-Based Routing (Backward Compatible)
+### Explicit Forward Paths
+
+Specify exact paths to call on upstreams:
 
 ```yaml
 services:
-  - name: web
-    upstreams: [api, cache]  # Calls all upstreams for any path
+  - name: payment
+    protocols: [grpc]
+    upstreams:
+      - name: message-bus
+        path: /events/PaymentProcessed
+      - name: message-bus
+        path: /events/PaymentFailed
 ```
 
-## Path Matching
+### Combined Match and Path
+
+Match incoming requests and forward to explicit paths:
+
+```yaml
+services:
+  - name: api-gateway
+    protocols: [http]
+    upstreams:
+      - name: order-api
+        match: [/api/v1/orders]
+        path: /v2/orders  # Forward to v2 endpoint
+```
+
+## Semantics
+
+| `match` | `path` | Behavior |
+|---------|--------|----------|
+| set | omitted | Call when incoming matches, forward to "/" |
+| omitted | set | Always call, forward to `path` |
+| set | set | Call when incoming matches, forward to `path` |
+| omitted | omitted | Always call, forward to "/" |
+
+## Match Behavior
 
 ### Prefix Matching
 
-Paths use prefix matching:
+Match uses prefix matching:
 
 ```yaml
 upstreams:
   - name: order-api
-    paths: [/orders]
+    match: [/orders]
 ```
 
-| Request Path | Matches? | Forwarded Path |
-|--------------|----------|----------------|
-| `/orders` | Yes | `/` |
-| `/orders/123` | Yes | `/123` |
-| `/orders/123/items` | Yes | `/123/items` |
-| `/order` | No | - |
-| `/products` | No | - |
+| Request Path | Matches? |
+|--------------|----------|
+| `/orders` | Yes |
+| `/orders/123` | Yes |
+| `/orders/123/items` | Yes |
+| `/order` | No |
+| `/products` | No |
 
 ### Multiple Paths for One Upstream
 
 ```yaml
 upstreams:
   - name: order-api
-    paths: [/orders, /cart, /checkout]
+    match: [/orders, /cart, /checkout]
 ```
 
-All these paths route to `order-api`:
-- `/orders` → `order-api`
-- `/cart` → `order-api`
-- `/checkout` → `order-api`
+All these paths route to `order-api`.
 
-### Multiple Upstreams with Different Paths
+### Multiple Upstreams with Different Matches
 
 ```yaml
 upstreams:
   - name: order-api
-    paths: [/orders, /cart]
+    match: [/orders, /cart]
   - name: product-api
-    paths: [/products]
+    match: [/products]
   - name: user-api
-    paths: [/users]
+    match: [/users]
 ```
 
-| Request Path | Calls Upstream | Forwarded Path |
-|--------------|----------------|----------------|
-| `/orders/123` | `order-api` | `/123` |
-| `/cart/add` | `order-api` | `/add` |
-| `/products/search` | `product-api` | `/search` |
-| `/users/profile` | `user-api` | `/profile` |
-| `/unknown` | (none) | Returns 404 |
+| Request Path | Calls Upstream |
+|--------------|----------------|
+| `/orders/123` | `order-api` |
+| `/cart/add` | `order-api` |
+| `/products/search` | `product-api` |
+| `/users/profile` | `user-api` |
+| `/unknown` | (none - returns 404) |
 
 ### Catch-All Upstreams
 
-Upstreams without paths match all requests:
+Upstreams without `match` are called for all requests:
 
 ```yaml
 upstreams:
   - name: order-api
-    paths: [/orders]
-  - name: logger-api  # No paths = called for all requests
+    match: [/orders]
+  - name: logger-api  # No match = called for all requests
 ```
 
 Result:
 - `/orders` → calls `order-api` AND `logger-api`
 - `/products` → calls only `logger-api`
 
-## Path Stripping
+## Forward Path Behavior
 
-The matched prefix is stripped before forwarding to the upstream:
+The `path` field specifies the exact path to call on the upstream:
 
-**Configuration:**
 ```yaml
 upstreams:
-  - name: order-api
-    paths: [/orders]
+  - name: message-bus
+    path: /events/OrderCreated
 ```
 
-**Examples:**
+When this upstream is called, the request goes to `message-bus` at `/events/OrderCreated`, regardless of what path the caller received.
 
-| Incoming Request | Matched Prefix | Path to Upstream |
-|------------------|----------------|------------------|
-| `/orders` | `/orders` | `/` |
-| `/orders/123` | `/orders` | `/123` |
-| `/orders/123/items` | `/orders` | `/123/items` |
+### Default Forward Path
 
-This allows upstream services to not know about the routing prefix.
+If `path` is not specified, upstreams are called at `/`.
+
+## Protocol Considerations
+
+### HTTP Callers
+
+- `match`: Used to filter which incoming paths trigger the upstream
+- `path`: Used to specify forward path
+
+### gRPC Callers
+
+- `match`: **Ignored** (gRPC doesn't have incoming HTTP paths)
+- `path`: Used to specify forward path to HTTP upstreams
+
+### gRPC Upstreams
+
+- `path`: **Ignored** (gRPC uses service/method, not paths)
+
+Validation warnings are emitted at generation time for incompatible configurations.
 
 ## Environment Variable Format
 
-### New Format (with paths)
+### Format
 
 ```
-order-api:grpc://order-api:9090:/orders,/cart|product-api:http://product-api:8080:/products
+name=url[:match=/a,/b][:path=/forward]
 ```
 
-Format: `name:url:path1,path2|name2:url2:path3`
-- `|` delimiter between upstreams
-- `,` separates multiple paths for same upstream
-- Omit paths section for catch-all
+Multiple upstreams are separated by `|`.
 
-### Old Format (backward compatible)
+### Examples
 
+```bash
+# Simple upstream (no routing)
+UPSTREAMS="api=http://api:8080"
+
+# With match
+UPSTREAMS="order-api=http://order-api:8080:match=/orders,/cart"
+
+# With path
+UPSTREAMS="message-bus=http://message-bus:8080:path=/events/OrderCreated"
+
+# With both
+UPSTREAMS="api=http://api:8080:match=/api/v1:path=/v2"
+
+# Multiple upstreams
+UPSTREAMS="order-api=http://order-api:8080:match=/orders|product-api=http://product-api:8080:match=/products"
 ```
-api:http://api:8080,cache:http://cache:8080
-```
-
-Format: `name:url,name2:url2`
-- `,` delimiter between upstreams
-- No paths = catch-all behavior
 
 ## Use Cases
 
 ### API Gateway Simulation
 
-Frontend service routes to different backends based on path:
+Route incoming requests to different backends:
 
 ```yaml
 services:
   - name: api-gateway
+    protocols: [http]
     upstreams:
       - name: order-service
-        paths: [/api/v1/orders, /api/v1/checkout]
+        match: [/api/v1/orders, /api/v1/checkout]
       - name: product-service
-        paths: [/api/v1/products, /api/v1/catalog]
+        match: [/api/v1/products, /api/v1/catalog]
       - name: user-service
-        paths: [/api/v1/users, /api/v1/auth]
+        match: [/api/v1/users, /api/v1/auth]
 ```
 
-### Microservices Testing
+### Event Publishing
 
-Test complex routing scenarios:
+gRPC services publishing events to an HTTP message bus:
 
 ```yaml
 services:
-  - name: web-frontend
+  - name: payment
+    protocols: [grpc]
     upstreams:
-      - name: orders-backend
-        paths: [/orders]
-      - name: products-backend
-        paths: [/products]
-      - name: search-backend
-        paths: [/search]
+      - name: message-bus
+        path: /events/PaymentProcessed
+      - name: message-bus
+        path: /events/PaymentFailed
+      - name: message-bus
+        path: /events/PaymentRefunded
 ```
 
-### Gateway API Simulation
+### Event Routing
 
-Simulate HTTPRoute path matching behavior:
+Message bus routing events to notification service:
 
 ```yaml
 services:
-  - name: ingress-proxy
+  - name: message-bus
+    protocols: [http]
     upstreams:
-      - name: api-v1
-        paths: [/api/v1]
+      - name: notification
+        match: [/events/OrderCreated, /events/OrderUpdated]
+      - name: notification
+        match: [/events/PaymentProcessed, /events/PaymentFailed]
+```
+
+### Version Migration
+
+Route old API paths to new endpoints:
+
+```yaml
+services:
+  - name: api-proxy
+    protocols: [http]
+    upstreams:
       - name: api-v2
-        paths: [/api/v2]
-      - name: static-assets
-        paths: [/static, /assets]
+        match: [/api/v1/users]
+        path: /v2/users
+      - name: api-v2
+        match: [/api/v1/orders]
+        path: /v2/orders
 ```
 
 ## Testing
@@ -216,12 +293,6 @@ services:
 kubectl get deployment api-gateway -o yaml | grep -A 2 "UPSTREAMS"
 ```
 
-Expected output:
-```yaml
-- name: UPSTREAMS
-  value: "order-api:grpc://order-api:9090:/orders,/cart|product-api:http://product-api:8080:/products"
-```
-
 ### Test Path Routing at Runtime
 
 ```bash
@@ -235,88 +306,8 @@ curl http://api-gateway:8080/products
 curl http://api-gateway:8080/unknown
 ```
 
-### Verify Routing in Response
-
-```bash
-curl http://api-gateway:8080/orders | jq '.upstream_calls[].name'
-# Output: "order-api"
-
-curl http://api-gateway:8080/products | jq '.upstream_calls[].name'
-# Output: "product-api"
-```
-
-## Example: E-Commerce Gateway
-
-```yaml
-services:
-  - name: api-gateway
-    namespace: frontend
-    protocols: [http]
-    replicas: 2
-    upstreams:
-      - name: order-api
-        url: grpc://order-api.orders.svc.cluster.local:9090
-        paths: [/orders, /cart, /checkout]
-      - name: product-api
-        url: http://product-api.products.svc.cluster.local:8080
-        paths: [/products, /catalog, /search]
-      - name: user-api
-        url: http://user-api.users.svc.cluster.local:8080
-        paths: [/users, /auth, /profile]
-      - name: review-api
-        url: http://review-api.reviews.svc.cluster.local:8080
-        paths: [/reviews, /ratings]
-```
-
-Requests:
-- `GET /orders/123` → routes to `order-api` with path `/123`
-- `GET /products/search?q=laptop` → routes to `product-api` with path `/search?q=laptop`
-- `GET /users/profile` → routes to `user-api` with path `/profile`
-- `GET /reviews?product=123` → routes to `review-api` with path `/?product=123`
-
-## Migration Guide
-
-### Existing Services
-
-No changes required. Services without path configuration continue to call all upstreams.
-
-### New Services with Path Routing
-
-Use the new format:
-
-```yaml
-services:
-  - name: frontend
-    upstreams:
-      - name: user-api
-        paths: [/users, /auth]
-      - name: product-api
-        paths: [/products, /catalog]
-```
-
-### Mixed Configuration
-
-You can mix path-based and catch-all upstreams:
-
-```yaml
-services:
-  - name: frontend
-    upstreams:
-      - name: order-api
-        paths: [/orders]      # Only for /orders paths
-      - name: logger-api      # Called for all requests
-```
-
-## Limitations
-
-- HTTP only (gRPC services ignore path routing)
-- Prefix matching only (no regex or exact match)
-- Path rewriting not supported (only stripping)
-- Query parameters are preserved
-
 ## See Also
 
 - [DSL Reference](../reference/dsl-spec.md) - Upstream configuration syntax
 - [Architecture](../concepts/architecture.md) - HTTP server implementation
-- [E-Commerce Example](../../examples/ecommerce/) - Path routing in action
-
+- [E-Commerce Example](../../examples/ecommerce-full/) - Path routing in action
