@@ -71,16 +71,16 @@ func TestProcessRequest_NoBehavior(t *testing.T) {
 		BehaviorStr: "",
 	}
 
-	resp, earlyExit, err := handler.ProcessRequest(reqCtx, "http")
+	result, err := handler.ProcessRequest(reqCtx, "http")
 
 	if err != nil {
 		t.Errorf("Expected no error, got %v", err)
 	}
-	if earlyExit {
+	if result.EarlyExit {
 		t.Error("Expected no early exit for no behavior")
 	}
-	if resp != nil {
-		t.Errorf("Expected nil response (no early exit), got %+v", resp)
+	if result.Response != nil {
+		t.Errorf("Expected nil response (no early exit), got %+v", result.Response)
 	}
 }
 
@@ -99,17 +99,17 @@ func TestProcessRequest_LatencyBehavior(t *testing.T) {
 	}
 
 	start := time.Now()
-	resp, earlyExit, err := handler.ProcessRequest(reqCtx, "http")
+	result, err := handler.ProcessRequest(reqCtx, "http")
 	duration := time.Since(start)
 
 	if err != nil {
 		t.Errorf("Expected no error, got %v", err)
 	}
-	if earlyExit {
+	if result.EarlyExit {
 		t.Error("Expected no early exit for latency behavior")
 	}
-	if resp != nil {
-		t.Errorf("Expected nil response (no early exit), got %+v", resp)
+	if result.Response != nil {
+		t.Errorf("Expected nil response (no early exit), got %+v", result.Response)
 	}
 	if duration < 50*time.Millisecond {
 		t.Errorf("Expected at least 50ms latency, got %v", duration)
@@ -130,21 +130,21 @@ func TestProcessRequest_ErrorBehavior(t *testing.T) {
 		BehaviorStr: "error=503",
 	}
 
-	resp, earlyExit, err := handler.ProcessRequest(reqCtx, "http")
+	result, err := handler.ProcessRequest(reqCtx, "http")
 
 	if err != nil {
 		t.Errorf("Expected no error, got %v", err)
 	}
-	if !earlyExit {
+	if !result.EarlyExit {
 		t.Error("Expected early exit for error behavior")
 	}
-	if resp == nil {
+	if result.Response == nil {
 		t.Fatal("Expected response for error behavior")
 	}
-	if resp.Code != 503 {
-		t.Errorf("Expected status code 503, got %d", resp.Code)
+	if result.Response.Code != 503 {
+		t.Errorf("Expected status code 503, got %d", result.Response.Code)
 	}
-	if resp.BehaviorsApplied == "" {
+	if result.BehaviorsApplied == "" {
 		t.Error("Expected BehaviorsApplied to be set")
 	}
 }
@@ -163,19 +163,19 @@ func TestProcessRequest_DiskBehaviorFailure(t *testing.T) {
 		BehaviorStr: "disk=fill:1Ki:/nonexistent/path:1s",
 	}
 
-	resp, earlyExit, err := handler.ProcessRequest(reqCtx, "http")
+	result, err := handler.ProcessRequest(reqCtx, "http")
 
 	if err != nil {
 		t.Errorf("Expected no error, got %v", err)
 	}
-	if !earlyExit {
+	if !result.EarlyExit {
 		t.Error("Expected early exit for disk failure")
 	}
-	if resp == nil {
+	if result.Response == nil {
 		t.Fatal("Expected response for disk failure")
 	}
-	if resp.Code != 507 {
-		t.Errorf("Expected status code 507, got %d", resp.Code)
+	if result.Response.Code != 507 {
+		t.Errorf("Expected status code 507, got %d", result.Response.Code)
 	}
 }
 
@@ -199,19 +199,19 @@ func TestProcessRequest_ErrorIfFile(t *testing.T) {
 		BehaviorStr: fmt.Sprintf("error-if-file=%s:invalid_key:401", tmpFile),
 	}
 
-	resp, earlyExit, err := handler.ProcessRequest(reqCtx, "http")
+	result, err := handler.ProcessRequest(reqCtx, "http")
 
 	if err != nil {
 		t.Errorf("Expected no error, got %v", err)
 	}
-	if !earlyExit {
+	if !result.EarlyExit {
 		t.Error("Expected early exit for error-if-file")
 	}
-	if resp == nil {
+	if result.Response == nil {
 		t.Fatal("Expected response for error-if-file")
 	}
-	if resp.Code != 401 {
-		t.Errorf("Expected status code 401, got %d", resp.Code)
+	if result.Response.Code != 401 {
+		t.Errorf("Expected status code 401, got %d", result.Response.Code)
 	}
 }
 
@@ -231,16 +231,16 @@ func TestProcessRequest_TargetedBehavior(t *testing.T) {
 		BehaviorStr: "service-b:error=500",
 	}
 
-	resp, earlyExit, err := handler.ProcessRequest(reqCtx, "http")
+	result, err := handler.ProcessRequest(reqCtx, "http")
 
 	if err != nil {
 		t.Errorf("Expected no error, got %v", err)
 	}
-	if earlyExit {
+	if result.EarlyExit {
 		t.Error("Expected no early exit when behavior targets different service")
 	}
-	if resp != nil {
-		t.Errorf("Expected nil response (no early exit), got %+v", resp)
+	if result.Response != nil {
+		t.Errorf("Expected nil response (no early exit), got %+v", result.Response)
 	}
 }
 
@@ -250,7 +250,7 @@ func TestCallUpstreams_NoUpstreams(t *testing.T) {
 	caller := client.NewCaller(tel)
 	handler := NewRequestHandler(cfg, caller, tel)
 
-	calls, err := handler.CallUpstreams(context.Background(), "", nil)
+	calls, err := handler.CallUpstreams(context.Background(), "", "", nil)
 
 	if err != nil {
 		t.Errorf("Expected no error, got %v", err)
@@ -282,7 +282,7 @@ func TestCallUpstreams_WithMatchedUpstreams(t *testing.T) {
 		cfg.Upstreams[0], // service-b
 	}
 
-	calls, err := handler.CallUpstreams(context.Background(), "", matchedUpstreams)
+	calls, err := handler.CallUpstreams(context.Background(), "", "", matchedUpstreams)
 
 	if err != nil {
 		t.Errorf("Expected no error, got %v", err)

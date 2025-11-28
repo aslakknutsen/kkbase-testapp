@@ -3,6 +3,7 @@ package service
 import (
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -37,11 +38,13 @@ type Config struct {
 
 // UpstreamConfig defines an upstream service
 type UpstreamConfig struct {
-	Name     string
-	URL      string
-	Protocol string   // "http" or "grpc"
-	Match    []string // Incoming paths that trigger routing to this upstream (empty = match all)
-	Path     string   // Explicit forward path to call on upstream (empty = "/")
+	Name        string   // Unique ID for this upstream entry (used for behavior targeting)
+	URL         string
+	Protocol    string   // "http" or "grpc"
+	Match       []string // Incoming paths that trigger routing to this upstream (empty = match all)
+	Path        string   // Explicit forward path to call on upstream (empty = "/")
+	Group       string   // Weighted selection group - upstreams in same group are mutually exclusive
+	Probability float64  // Independent call probability (0.0-1.0), only for ungrouped upstreams
 }
 
 // LoadConfigFromEnv loads configuration from environment variables
@@ -62,13 +65,14 @@ func LoadConfigFromEnv() *Config {
 		Upstreams:       []*UpstreamConfig{},
 	}
 
-	// Parse upstreams: name=url:match=/a,/b:path=/forward|name2=url2
-	// Format: name=protocol://host:port[:match=/a,/b][:path=/forward]
+	// Parse upstreams: id=url:match=/a,/b:path=/forward:group=name|id2=url2
+	// Format: id=protocol://host:port[:match=/a,/b][:path=/forward][:group=name]
 	// Examples:
 	//   - product-api=http://product.ns.svc.cluster.local:8080
 	//   - order-api=http://order.ns.svc.cluster.local:8080:match=/orders,/cart
 	//   - message-bus=http://message-bus.ns.svc.cluster.local:8080:path=/events/OrderCreated
 	//   - gateway=http://gateway:8080:match=/api:path=/v2/api
+	//   - payment-ok=http://bus:8080:path=/events/PaymentProcessed:group=payment-outcome
 	// Old format (backward compat): name:url (no = sign)
 	upstreamsStr := os.Getenv("UPSTREAMS")
 	if upstreamsStr != "" {
@@ -92,20 +96,21 @@ func LoadConfigFromEnv() *Config {
 				continue
 			}
 
-			var name, url, path string
+			var name, url, path, group string
 			var match []string
+			var prob float64
 
 			// Check for new format (name=url) vs old format (name:url)
 			if strings.Contains(upstream, "=") {
-				// New format: name=url[:match=...][:path=...]
+				// New format: id=url[:match=...][:path=...][:group=...][:prob=0.5]
 				eqIdx := strings.Index(upstream, "=")
 				name = upstream[:eqIdx]
 				rest := upstream[eqIdx+1:]
 
-				// Parse URL and optional match/path parameters
+				// Parse URL and optional match/path/group/prob parameters
 				// URL format: protocol://host:port
-				// Full format: protocol://host:port:match=/a,/b:path=/forward
-				url, match, path = parseUpstreamParams(rest)
+				// Full format: protocol://host:port:match=/a,/b:path=/forward:group=name:prob=0.5
+				url, match, path, group, prob = parseUpstreamParams(rest)
 			} else {
 				// Old format: name:url
 				parts := strings.SplitN(upstream, ":", 2)
@@ -127,11 +132,13 @@ func LoadConfigFromEnv() *Config {
 			}
 
 			cfg.Upstreams = append(cfg.Upstreams, &UpstreamConfig{
-				Name:     name,
-				URL:      url,
-				Protocol: protocol,
-				Match:    match,
-				Path:     path,
+				Name:        name,
+				URL:         url,
+				Protocol:    protocol,
+				Match:       match,
+				Path:        path,
+				Group:       group,
+				Probability: prob,
 			})
 		}
 	}
@@ -156,17 +163,17 @@ func getEnvInt(key string, defaultValue int) int {
 	return defaultValue
 }
 
-// parseUpstreamParams parses URL and optional match/path from upstream string
-// Format: protocol://host:port[:match=/a,/b][:path=/forward]
-func parseUpstreamParams(s string) (url string, match []string, path string) {
+// parseUpstreamParams parses URL and optional match/path/group/prob from upstream string
+// Format: protocol://host:port[:match=/a,/b][:path=/forward][:group=name][:prob=0.5]
+func parseUpstreamParams(s string) (url string, match []string, path string, group string, prob float64) {
 	// Find where URL ends (after port number)
 	// URL format: protocol://host:port
-	// We need to find the port, then check for :match= or :path= after
+	// We need to find the port, then check for parameters after
 
 	// Find the :// in the protocol
 	protoEnd := strings.Index(s, "://")
 	if protoEnd == -1 {
-		return s, nil, ""
+		return s, nil, "", "", 0
 	}
 
 	// Find the next colon after ://, which should be the port
@@ -174,41 +181,51 @@ func parseUpstreamParams(s string) (url string, match []string, path string) {
 	portColonIdx := strings.Index(afterProto, ":")
 	if portColonIdx == -1 {
 		// No port specified, return whole string as URL
-		return s, nil, ""
+		return s, nil, "", "", 0
 	}
 
-	// Find where the port number ends (either at :match=, :path=, or end of string)
+	// Find where the port number ends
 	portStart := protoEnd + 3 + portColonIdx + 1
+
+	// Look for all parameter markers after the port
+	paramMarkers := []string{":match=", ":path=", ":group=", ":prob="}
+	paramIndices := make(map[string]int)
+
+	for _, marker := range paramMarkers {
+		idx := strings.Index(s[portStart:], marker)
+		if idx != -1 {
+			paramIndices[marker] = idx + portStart
+		} else {
+			paramIndices[marker] = -1
+		}
+	}
+
+	// Determine where URL ends (first parameter marker)
 	portEnd := len(s)
-
-	// Look for :match= or :path= after the port
-	matchIdx := strings.Index(s[portStart:], ":match=")
-	pathIdx := strings.Index(s[portStart:], ":path=")
-
-	if matchIdx != -1 {
-		matchIdx += portStart
-	}
-	if pathIdx != -1 {
-		pathIdx += portStart
-	}
-
-	// Determine where URL ends
-	if matchIdx != -1 && (pathIdx == -1 || matchIdx < pathIdx) {
-		portEnd = matchIdx
-	} else if pathIdx != -1 {
-		portEnd = pathIdx
+	for _, idx := range paramIndices {
+		if idx != -1 && idx < portEnd {
+			portEnd = idx
+		}
 	}
 
 	url = s[:portEnd]
 
-	// Parse match parameter
-	if matchIdx != -1 {
-		matchStart := matchIdx + len(":match=")
-		matchEnd := len(s)
-		if pathIdx != -1 && pathIdx > matchIdx {
-			matchEnd = pathIdx
+	// Helper to find end of a parameter value
+	findParamEnd := func(start int) int {
+		end := len(s)
+		for _, idx := range paramIndices {
+			if idx > start && idx < end {
+				end = idx
+			}
 		}
-		matchStr := s[matchStart:matchEnd]
+		return end
+	}
+
+	// Parse match parameter
+	if idx := paramIndices[":match="]; idx != -1 {
+		start := idx + len(":match=")
+		end := findParamEnd(start)
+		matchStr := s[start:end]
 		for _, p := range strings.Split(matchStr, ",") {
 			if trimmed := strings.TrimSpace(p); trimmed != "" {
 				match = append(match, trimmed)
@@ -217,14 +234,28 @@ func parseUpstreamParams(s string) (url string, match []string, path string) {
 	}
 
 	// Parse path parameter
-	if pathIdx != -1 {
-		pathStart := pathIdx + len(":path=")
-		pathEnd := len(s)
-		if matchIdx != -1 && matchIdx > pathIdx {
-			pathEnd = matchIdx
-		}
-		path = strings.TrimSpace(s[pathStart:pathEnd])
+	if idx := paramIndices[":path="]; idx != -1 {
+		start := idx + len(":path=")
+		end := findParamEnd(start)
+		path = strings.TrimSpace(s[start:end])
 	}
 
-	return url, match, path
+	// Parse group parameter
+	if idx := paramIndices[":group="]; idx != -1 {
+		start := idx + len(":group=")
+		end := findParamEnd(start)
+		group = strings.TrimSpace(s[start:end])
+	}
+
+	// Parse prob parameter
+	if idx := paramIndices[":prob="]; idx != -1 {
+		start := idx + len(":prob=")
+		end := findParamEnd(start)
+		probStr := strings.TrimSpace(s[start:end])
+		if p, err := strconv.ParseFloat(probStr, 64); err == nil {
+			prob = p
+		}
+	}
+
+	return url, match, path, group, prob
 }

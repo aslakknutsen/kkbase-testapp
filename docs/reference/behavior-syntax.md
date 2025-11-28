@@ -710,6 +710,58 @@ curl "/?behavior=latency=100-300ms,disk=fill:500Mi:/cache:10m"
 curl "/?behavior=product-api:disk=fill:1Gi:/var/cache:15m"
 ```
 
+## Upstream Weight Behaviors
+
+Control weighted selection for grouped upstreams.
+
+### Syntax
+
+```
+upstreamWeights=id1:weight1;id2:weight2
+```
+
+Note: Use semicolon (`;`) to separate entries within `upstreamWeights` to avoid conflict with the comma-separated behavior syntax.
+
+### Examples
+
+```
+upstreamWeights=payment-ok:85;payment-fail:15
+```
+
+```
+upstreamWeights=event-success:70;event-failure:20;event-timeout:10
+```
+
+### Weight Distribution
+
+- Weights are relative, not absolute percentages
+- Unspecified upstreams in a group share remaining weight equally
+- If `payment-ok: 85` is set and `payment-fail` is unspecified, it gets 15%
+
+### Combined with Other Behaviors
+
+```
+latency=50ms,upstreamWeights=payment-ok:85;payment-fail:15
+```
+
+### Use Cases
+
+**Payment Outcomes:**
+```bash
+curl "/?behavior=upstreamWeights=payment-processed:85;payment-failed:5;payment-refunded:10"
+```
+
+**A/B Testing Events:**
+```bash
+curl "/?behavior=upstreamWeights=variant-a:50;variant-b:50"
+```
+
+**Failure Simulation:**
+```bash
+# 30% failure rate
+curl "/?behavior=upstreamWeights=success:70;failure:30"
+```
+
 ## Service-Targeted Behaviors
 
 Apply behaviors to specific services in the call chain.

@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/aslakknutsen/kkbase/testapp/pkg/service"
+	"github.com/aslakknutsen/kkbase/testapp/pkg/service/behavior"
 	"github.com/aslakknutsen/kkbase/testapp/pkg/service/client"
 	"github.com/aslakknutsen/kkbase/testapp/pkg/service/handler"
 	"github.com/aslakknutsen/kkbase/testapp/pkg/service/router"
@@ -97,7 +98,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Process request with handler (behavior execution)
-	resp, earlyExit, err := s.handler.ProcessRequest(reqCtx, "http")
+	processResult, err := s.handler.ProcessRequest(reqCtx, "http")
 	if err != nil {
 		s.telemetry.Logger.Error("Failed to process request", zap.Error(err))
 		span.RecordError(err)
@@ -106,24 +107,30 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// If early exit (behavior triggered error), send response
-	if earlyExit {
-		statusCode := int(resp.Code)
-		resp.Url = r.URL.RequestURI()
-		s.sendResponse(w, r, resp, statusCode, span, start)
+	if processResult.EarlyExit {
+		statusCode := int(processResult.Response.Code)
+		processResult.Response.Url = r.URL.RequestURI()
+		s.sendResponse(w, r, processResult.Response, statusCode, span, start)
 		return
 	}
 
-	// Get behaviors applied for upstream propagation
-	var behaviorsApplied string
-	if behaviorStr != "" {
-		behaviorsApplied = behaviorStr
-	}
+	// Use behaviors applied from ProcessRequest (includes defaults like upstreamWeights)
+	behaviorsApplied := processResult.BehaviorsApplied
 
 	// Route and call upstreams
+	var resp *pb.ServiceResponse
 	var upstreamCalls []*pb.UpstreamCall
 	if s.router.HasUpstreams() {
-		// Match upstreams based on request path
-		matchedUpstreams := s.router.Match(r.URL.Path)
+		// Extract upstream weights from effective behavior (includes defaults)
+		var upstreamWeights map[string]int
+		if behaviorsApplied != "" {
+			if b, err := behavior.Parse(behaviorsApplied); err == nil && b.UpstreamWeights != nil {
+				upstreamWeights = b.UpstreamWeights.Weights
+			}
+		}
+
+		// Match upstreams based on request path with weighted selection for groups
+		matchedUpstreams := s.router.MatchWithWeights(r.URL.Path, upstreamWeights)
 
 		// If upstreams are configured but none match, return 404
 		if matchedUpstreams == nil {
@@ -137,7 +144,8 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		// Call matched upstreams with path stripping
+		// Call matched upstreams - propagate original external behavior only (not defaults)
+		// Each downstream service will apply its own defaults if no behavior targets it
 		upstreamCalls = s.callMatchedUpstreams(ctx, matchedUpstreams, r.URL.Path, behaviorStr)
 
 		// Check if any upstream returned non-2xx (excluding connection errors where Code=0)

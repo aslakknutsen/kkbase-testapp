@@ -347,7 +347,7 @@ func (g *Generator) getEnvVars(svc *types.ServiceConfig) []envVarData {
 	}
 
 	// Add behavior
-	if svc.Behavior.Latency != "" || svc.Behavior.ErrorRate > 0 {
+	if svc.Behavior.Latency != "" || svc.Behavior.ErrorRate > 0 || len(svc.Behavior.UpstreamWeights) > 0 {
 		behavior := g.buildBehaviorString(svc)
 		envVars = append(envVars, envVarData{
 			Name:  "DEFAULT_BEHAVIOR",
@@ -367,9 +367,12 @@ func (g *Generator) buildUpstreamsEnv(svc *types.ServiceConfig) string {
 	var parts []string
 
 	for _, upstream := range svc.Upstreams {
+		// Get the target service name (Service field if set, otherwise Name)
+		targetServiceName := upstream.EffectiveService()
+
 		// Find the upstream service
 		for _, target := range g.spec.Services {
-			if target.Name == upstream.Name {
+			if target.Name == targetServiceName {
 				protocol := "http"
 				port := target.Ports.HTTP
 
@@ -400,13 +403,20 @@ func (g *Generator) buildUpstreamsEnv(svc *types.ServiceConfig) string {
 				url := fmt.Sprintf("%s://%s.%s.svc.cluster.local:%d",
 					protocol, target.Name, target.Namespace, port)
 
-				// Build upstream string: name=url[:match=/a,/b][:path=/forward]
+				// Build upstream string: id=url[:match=/a,/b][:path=/forward][:group=name][:prob=0.5]
+				// The id is the unique upstream.Name, used for behavior targeting
 				upstreamStr := fmt.Sprintf("%s=%s", upstream.Name, url)
 				if len(upstream.Match) > 0 {
 					upstreamStr += ":match=" + strings.Join(upstream.Match, ",")
 				}
 				if upstream.Path != "" {
 					upstreamStr += ":path=" + upstream.Path
+				}
+				if upstream.Group != "" {
+					upstreamStr += ":group=" + upstream.Group
+				}
+				if upstream.Probability > 0 {
+					upstreamStr += fmt.Sprintf(":prob=%.2f", upstream.Probability)
 				}
 
 				parts = append(parts, upstreamStr)
@@ -426,6 +436,15 @@ func (g *Generator) buildBehaviorString(svc *types.ServiceConfig) string {
 	}
 	if svc.Behavior.ErrorRate > 0 {
 		parts = append(parts, fmt.Sprintf("error=%.2f", svc.Behavior.ErrorRate))
+	}
+	if len(svc.Behavior.UpstreamWeights) > 0 {
+		// Format: upstreamWeights=id1:weight1;id2:weight2
+		// Use semicolon as separator within upstreamWeights to avoid conflict with comma
+		var weightParts []string
+		for id, weight := range svc.Behavior.UpstreamWeights {
+			weightParts = append(weightParts, fmt.Sprintf("%s:%d", id, weight))
+		}
+		parts = append(parts, fmt.Sprintf("upstreamWeights=%s", strings.Join(weightParts, ";")))
 	}
 	return strings.Join(parts, ",")
 }

@@ -4,15 +4,19 @@ HTTP services support path-based routing to selectively call upstream services b
 
 ## Overview
 
-Path-based routing uses two separate concepts:
+Path-based routing uses several concepts:
 
+- **`name`**: Unique ID for the upstream entry (used for behavior targeting)
+- **`service`**: Target service name (defaults to `name` if not specified)
 - **`match`**: Incoming paths that trigger routing to this upstream (HTTP callers only)
 - **`path`**: Explicit forward path to call on the upstream (HTTP upstreams only)
+- **`group`**: Weighted selection group - upstreams in same group are mutually exclusive
 
 **Features:**
 - Prefix matching for `match` - `/orders` matches `/orders`, `/orders/123`, `/orders/123/items`
 - Explicit forward paths - call upstreams on specific paths regardless of incoming request
 - Multiple matches - all matching upstreams are called (fan-out)
+- Weighted groups - upstreams in same group: one selected based on weights
 - 404 on no match - returns HTTP 404 if no upstream matches (when match rules exist)
 - Protocol-aware - validation warnings for incompatible configs
 
@@ -164,6 +168,121 @@ When this upstream is called, the request goes to `message-bus` at `/events/Orde
 
 If `path` is not specified, upstreams are called at `/`.
 
+## Weighted Groups
+
+Upstreams can be grouped for weighted selection. This is useful for simulating mutually exclusive outcomes like payment success/failure.
+
+### Basic Group Configuration
+
+```yaml
+upstreams:
+  - name: payment-ok           # Unique ID for this entry
+    service: message-bus       # Target service
+    path: /events/PaymentProcessed
+    group: payment-outcome     # Group name
+  - name: payment-fail
+    service: message-bus
+    path: /events/PaymentFailed
+    group: payment-outcome
+```
+
+Without explicit weights, upstreams in a group have equal probability (50% each in this case).
+
+### Setting Weights via Behavior
+
+Static weights in DSL:
+
+```yaml
+behavior:
+  upstreamWeights:
+    payment-ok: 85
+    payment-fail: 15
+```
+
+Dynamic weights at runtime:
+
+```bash
+curl "http://service:8080/?behavior=upstreamWeights=payment-ok:85;payment-fail:15"
+```
+
+### Weight Distribution
+
+- Weights are relative, not percentages
+- Unspecified upstreams in a group share remaining weight equally
+- Example: `payment-ok: 85` → `payment-fail` gets 15% automatically
+
+### Mixed Grouped and Ungrouped
+
+```yaml
+upstreams:
+  - name: logger            # No group = always called
+  - name: payment-ok
+    service: message-bus
+    group: payment-outcome
+  - name: payment-fail
+    service: message-bus
+    group: payment-outcome
+```
+
+Result per request:
+- `logger` is always called
+- One of `payment-ok` or `payment-fail` is selected based on weights
+
+## Independent Probability
+
+For events that should be called independently with a certain probability (not mutually exclusive), use `probability`:
+
+```yaml
+upstreams:
+  - name: audit-log
+    service: audit
+    probability: 0.10         # 10% of requests
+  - name: stock-alert
+    service: message-bus
+    path: /events/StockLevelLow
+    probability: 0.01         # 1% of requests
+```
+
+### Probability vs Groups
+
+| Feature | Groups + Weights | Probability |
+|---------|-----------------|-------------|
+| Semantics | Mutually exclusive (pick one) | Independent (might not be called) |
+| Use case | Payment success/failure | Audit sampling, alerts |
+| Per request | Exactly one from group | Zero or one |
+
+### Combined Example
+
+```yaml
+upstreams:
+  # Always called
+  - name: notification
+    service: notification-svc
+    
+  # Mutually exclusive group
+  - name: stock-ok
+    service: message-bus
+    group: stock-outcome
+  - name: stock-fail
+    service: message-bus
+    group: stock-outcome
+    
+  # Independent probability
+  - name: stock-alert
+    service: message-bus
+    probability: 0.01
+
+behavior:
+  upstreamWeights:
+    stock-ok: 90
+    stock-fail: 10
+```
+
+Result per request:
+- `notification`: always called
+- One of `stock-ok`/`stock-fail`: based on 90:10 weights
+- `stock-alert`: called 1% of requests (independent roll)
+
 ## Protocol Considerations
 
 ### HTTP Callers
@@ -187,8 +306,15 @@ Validation warnings are emitted at generation time for incompatible configuratio
 ### Format
 
 ```
-name=url[:match=/a,/b][:path=/forward]
+id=url[:match=/a,/b][:path=/forward][:group=name][:prob=0.5]
 ```
+
+- `id`: Unique identifier for this upstream entry (used for behavior targeting)
+- `url`: Target service URL
+- `match`: Incoming paths that trigger this upstream
+- `path`: Forward path to call on upstream
+- `group`: Weighted selection group name
+- `prob`: Independent call probability (0.0-1.0)
 
 Multiple upstreams are separated by `|`.
 
@@ -206,6 +332,9 @@ UPSTREAMS="message-bus=http://message-bus:8080:path=/events/OrderCreated"
 
 # With both
 UPSTREAMS="api=http://api:8080:match=/api/v1:path=/v2"
+
+# With group for weighted selection
+UPSTREAMS="payment-ok=http://bus:8080:path=/events/PaymentOK:group=outcome|payment-fail=http://bus:8080:path=/events/PaymentFail:group=outcome"
 
 # Multiple upstreams
 UPSTREAMS="order-api=http://order-api:8080:match=/orders|product-api=http://product-api:8080:match=/products"
@@ -246,6 +375,36 @@ services:
       - name: message-bus
         path: /events/PaymentRefunded
 ```
+
+### Weighted Event Selection
+
+When publishing mutually exclusive events (e.g., payment outcomes), use groups with weights:
+
+```yaml
+services:
+  - name: payment
+    protocols: [grpc]
+    upstreams:
+      - name: payment-processed      # Unique ID for behavior targeting
+        service: message-bus         # Target service
+        path: /events/PaymentProcessed
+        group: payment-outcome       # Group for weighted selection
+      - name: payment-failed
+        service: message-bus
+        path: /events/PaymentFailed
+        group: payment-outcome
+      - name: payment-refunded
+        service: message-bus
+        path: /events/PaymentRefunded
+        group: payment-outcome
+    behavior:
+      upstreamWeights:
+        payment-processed: 85
+        payment-failed: 5
+        payment-refunded: 10
+```
+
+Upstreams in the same group are mutually exclusive - only one is called per request, selected based on weights.
 
 ### Event Routing
 

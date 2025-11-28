@@ -3,6 +3,7 @@ package handler
 import (
 	"context"
 	"fmt"
+	"math/rand"
 	"time"
 
 	"github.com/aslakknutsen/kkbase/testapp/pkg/service"
@@ -38,9 +39,16 @@ func NewRequestHandler(cfg *service.Config, caller *client.Caller, tel *telemetr
 	}
 }
 
+// ProcessResult contains the result of processing a request
+type ProcessResult struct {
+	Response         *pb.ServiceResponse // Non-nil on early exit
+	BehaviorsApplied string              // Effective behaviors applied (includes defaults)
+	EarlyExit        bool                // True if should return immediately
+}
+
 // ProcessRequest handles the complete request lifecycle
-// Returns a response and a boolean indicating if it's an early exit (before upstream calls)
-func (h *RequestHandler) ProcessRequest(reqCtx *RequestContext, protocol string) (*pb.ServiceResponse, bool, error) {
+// Returns ProcessResult with response on early exit, otherwise just BehaviorsApplied
+func (h *RequestHandler) ProcessRequest(reqCtx *RequestContext, protocol string) (*ProcessResult, error) {
 	// Get default behavior if not provided
 	behaviorStr := reqCtx.BehaviorStr
 	if behaviorStr == "" {
@@ -65,7 +73,7 @@ func (h *RequestHandler) ProcessRequest(reqCtx *RequestContext, protocol string)
 		executor := behavior.NewExecutor(beh, reqCtx.TraceID, h.config.Name, h.telemetry.Logger)
 		result, err := executor.Execute(reqCtx.Ctx)
 		if err != nil {
-			return nil, false, fmt.Errorf("execute behavior: %w", err)
+			return nil, fmt.Errorf("execute behavior: %w", err)
 		}
 
 		behaviorsApplied = executor.String()
@@ -77,7 +85,11 @@ func (h *RequestHandler) ProcessRequest(reqCtx *RequestContext, protocol string)
 
 			// Build and return error response
 			resp := h.buildResponse(reqCtx, protocol, result.StatusCode, result.ErrorMessage, behaviorsApplied, nil)
-			return resp, true, nil
+			return &ProcessResult{
+				Response:         resp,
+				BehaviorsApplied: behaviorsApplied,
+				EarlyExit:        true,
+			}, nil
 		}
 
 		// Record applied behaviors
@@ -86,13 +98,20 @@ func (h *RequestHandler) ProcessRequest(reqCtx *RequestContext, protocol string)
 		}
 	}
 
-	// No early exit - return success response info
-	return nil, false, nil
+	// No early exit - return behaviors applied for use in success response
+	return &ProcessResult{
+		BehaviorsApplied: behaviorsApplied,
+		EarlyExit:        false,
+	}, nil
 }
 
 // CallUpstreams calls upstream services and returns the calls
 // This is called by the server after ProcessRequest if there's no early exit
-func (h *RequestHandler) CallUpstreams(ctx context.Context, behaviorStr string, matchedUpstreams []*service.UpstreamConfig) ([]*pb.UpstreamCall, error) {
+// For gRPC (matchedUpstreams == nil), applies weighted selection if groups are configured
+// Parameters:
+//   - effectiveBehaviorStr: used for routing decisions (includes defaults like upstreamWeights)
+//   - propagateBehaviorStr: passed to downstream services (external behavior only, not defaults)
+func (h *RequestHandler) CallUpstreams(ctx context.Context, effectiveBehaviorStr string, propagateBehaviorStr string, matchedUpstreams []*service.UpstreamConfig) ([]*pb.UpstreamCall, error) {
 	var calls []*pb.UpstreamCall
 
 	// If no upstreams configured, return empty
@@ -103,8 +122,9 @@ func (h *RequestHandler) CallUpstreams(ctx context.Context, behaviorStr string, 
 	// Determine which upstreams to call
 	upstreamsToCall := matchedUpstreams
 	if upstreamsToCall == nil {
-		// No matched upstreams provided (gRPC case) - call all configured upstreams
-		upstreamsToCall = h.config.Upstreams
+		// No matched upstreams provided (gRPC case) - apply weighted selection to all upstreams
+		// Uses effective behavior (includes defaults) for routing decisions
+		upstreamsToCall = h.applyWeightedSelectionForGRPC(effectiveBehaviorStr)
 	}
 
 	// Call each upstream (fail-fast: stop on first failure)
@@ -131,8 +151,9 @@ func (h *RequestHandler) CallUpstreams(ctx context.Context, behaviorStr string, 
 			}
 		}
 
-		// Use shared caller with behavior propagation
-		result := h.caller.Call(ctx, name, upstreamWithPath, behaviorStr)
+		// Use shared caller - propagate external behavior only (not defaults)
+		// Each downstream service will apply its own defaults if no behavior targets it
+		result := h.caller.Call(ctx, name, upstreamWithPath, propagateBehaviorStr)
 
 		// Convert to pb.UpstreamCall and record metrics
 		call := h.ResultToUpstreamCall(result)
@@ -153,6 +174,147 @@ func (h *RequestHandler) CallUpstreams(ctx context.Context, behaviorStr string, 
 	}
 
 	return calls, nil
+}
+
+// applyWeightedSelectionForGRPC applies weighted selection and probability filtering for gRPC
+// - Groups: select one per group based on weights
+// - Ungrouped with Probability: include based on probability roll
+// - Ungrouped without Probability: always include
+func (h *RequestHandler) applyWeightedSelectionForGRPC(behaviorStr string) []*service.UpstreamConfig {
+	upstreams := h.config.Upstreams
+
+	// Extract weights from behavior
+	var weights map[string]int
+	if behaviorStr != "" {
+		if b, err := behavior.Parse(behaviorStr); err == nil && b.UpstreamWeights != nil {
+			weights = b.UpstreamWeights.Weights
+		}
+	}
+
+	// Check if any upstreams have groups or probability
+	hasGroupsOrProbability := false
+	for _, u := range upstreams {
+		if u.Group != "" || u.Probability > 0 {
+			hasGroupsOrProbability = true
+			break
+		}
+	}
+
+	// If no groups or probability, return all upstreams
+	if !hasGroupsOrProbability {
+		return upstreams
+	}
+
+	// Group upstreams by their Group field
+	groups := make(map[string][]*service.UpstreamConfig)
+	var ungrouped []*service.UpstreamConfig
+
+	for _, u := range upstreams {
+		if u.Group == "" {
+			ungrouped = append(ungrouped, u)
+		} else {
+			groups[u.Group] = append(groups[u.Group], u)
+		}
+	}
+
+	// Process ungrouped upstreams - apply probability filtering
+	var result []*service.UpstreamConfig
+	for _, u := range ungrouped {
+		if u.Probability > 0 {
+			// Roll probability to decide if included
+			if rand.Float64() < u.Probability {
+				result = append(result, u)
+			}
+		} else {
+			// No probability set = always included
+			result = append(result, u)
+		}
+	}
+
+	// For each group, select one upstream based on weights
+	for _, groupUpstreams := range groups {
+		selected := selectWeightedUpstream(groupUpstreams, weights)
+		if selected != nil {
+			result = append(result, selected)
+		}
+	}
+
+	return result
+}
+
+// selectWeightedUpstream selects one upstream from the group based on weights
+func selectWeightedUpstream(upstreams []*service.UpstreamConfig, weights map[string]int) *service.UpstreamConfig {
+	if len(upstreams) == 0 {
+		return nil
+	}
+	if len(upstreams) == 1 {
+		return upstreams[0]
+	}
+
+	// Calculate effective weights
+	effectiveWeights := make([]int, len(upstreams))
+	totalExplicit := 0
+	explicitCount := 0
+
+	for i, u := range upstreams {
+		if w, ok := weights[u.Name]; ok && w > 0 {
+			effectiveWeights[i] = w
+			totalExplicit += w
+			explicitCount++
+		}
+	}
+
+	// Distribute remaining weight equally among unspecified upstreams
+	unspecifiedCount := len(upstreams) - explicitCount
+	if unspecifiedCount > 0 {
+		remaining := 100 - totalExplicit
+		if remaining < 0 {
+			remaining = 0
+		}
+		perUnspecified := remaining / unspecifiedCount
+
+		for i, u := range upstreams {
+			if _, ok := weights[u.Name]; !ok {
+				effectiveWeights[i] = perUnspecified
+			}
+		}
+	}
+
+	// If no weights specified at all, use equal distribution
+	if explicitCount == 0 {
+		for i := range effectiveWeights {
+			effectiveWeights[i] = 100 / len(upstreams)
+		}
+	}
+
+	// Calculate total weight
+	totalWeight := 0
+	for _, w := range effectiveWeights {
+		totalWeight += w
+	}
+
+	if totalWeight <= 0 {
+		// Fallback: pick first
+		return upstreams[0]
+	}
+
+	// Random selection based on weights
+	r := randomInt(totalWeight)
+	cumulative := 0
+	for i, w := range effectiveWeights {
+		cumulative += w
+		if r < cumulative {
+			return upstreams[i]
+		}
+	}
+
+	// Fallback
+	return upstreams[len(upstreams)-1]
+}
+
+// randomInt returns a random integer in [0, n)
+func randomInt(n int) int {
+	return rand.Intn(n)
 }
 
 // BuildSuccessResponse builds a successful response

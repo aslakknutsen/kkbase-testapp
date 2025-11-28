@@ -91,15 +91,18 @@ func Validate(spec *types.AppSpec) error {
 	// Validate upstream references
 	for _, svc := range spec.Services {
 		for _, upstream := range svc.Upstreams {
+			// Use EffectiveService() to get the target service name
+			// (Service field if set, otherwise Name)
+			targetService := upstream.EffectiveService()
 			found := false
 			for _, target := range spec.Services {
-				if target.Name == upstream.Name {
+				if target.Name == targetService {
 					found = true
 					break
 				}
 			}
 			if !found {
-				return fmt.Errorf("service %s references unknown upstream: %s", svc.Name, upstream.Name)
+				return fmt.Errorf("service %s references unknown upstream: %s", svc.Name, targetService)
 			}
 		}
 	}
@@ -128,12 +131,12 @@ func Validate(spec *types.AppSpec) error {
 
 // checkCircularDeps checks for circular dependencies in upstream calls
 func checkCircularDeps(spec *types.AppSpec) error {
-	// Build adjacency list
+	// Build adjacency list using EffectiveService() to get target service names
 	graph := make(map[string][]string)
 	for _, svc := range spec.Services {
 		upstreamNames := make([]string, 0, len(svc.Upstreams))
 		for _, upstream := range svc.Upstreams {
-			upstreamNames = append(upstreamNames, upstream.Name)
+			upstreamNames = append(upstreamNames, upstream.EffectiveService())
 		}
 		graph[svc.Name] = upstreamNames
 	}

@@ -120,15 +120,26 @@ services:
     replicas: 2
     protocols: [grpc]
     upstreams:
-      - name: message-bus
+      # Weighted group: one stock reservation outcome per request
+      - name: stock-reserved
+        service: message-bus
         path: /events/StockReserved
-      - name: message-bus
+        group: stock-outcome
+      - name: stock-failed
+        service: message-bus
         path: /events/StockReservationFailed
-      - name: message-bus
+        group: stock-outcome
+      # Independent probability: low stock alert fires 1% of requests
+      - name: stock-low
+        service: message-bus
         path: /events/StockLevelLow
+        probability: 0.01          # 1% independent probability
     behavior:
       latency: "10-40ms"
       errorRate: 0.008
+      upstreamWeights:
+        stock-reserved: 90         # 90% successful reservation
+        stock-failed: 10           # 10% reservation failure
     resources:
       requests:
         cpu: "10m"
@@ -268,15 +279,26 @@ services:
     replicas: 3
     protocols: [grpc]
     upstreams:
-      - name: message-bus
+      # Weighted group: one event is selected per request based on weights
+      - name: payment-processed      # Unique ID for behavior targeting
+        service: message-bus         # Target service
         path: /events/PaymentProcessed
-      - name: message-bus
+        group: payment-outcome       # Weighted selection group
+      - name: payment-failed
+        service: message-bus
         path: /events/PaymentFailed
-      - name: message-bus
+        group: payment-outcome
+      - name: payment-refunded
+        service: message-bus
         path: /events/PaymentRefunded
+        group: payment-outcome
     behavior:
       latency: "50-200ms"
       errorRate: 0.005
+      upstreamWeights:
+        payment-processed: 85        # 85% success
+        payment-failed: 5            # 5% failure
+        payment-refunded: 10         # 10% refund
     resources:
       requests:
         cpu: "10m"

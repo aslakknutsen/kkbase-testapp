@@ -8,14 +8,15 @@ import (
 
 // Behavior represents parsed behavior directives
 type Behavior struct {
-	Latency     *LatencyBehavior
-	Error       *ErrorBehavior
-	CPU         *CPUBehavior
-	Memory      *MemoryBehavior
-	Panic       *PanicBehavior
-	CrashIfFile *CrashIfFileBehavior
-	ErrorIfFile *ErrorIfFileBehavior
-	Disk        *DiskBehavior
+	Latency         *LatencyBehavior
+	Error           *ErrorBehavior
+	CPU             *CPUBehavior
+	Memory          *MemoryBehavior
+	Panic           *PanicBehavior
+	CrashIfFile     *CrashIfFileBehavior
+	ErrorIfFile     *ErrorIfFileBehavior
+	Disk            *DiskBehavior
+	UpstreamWeights *UpstreamWeightsBehavior // Weights for grouped upstreams (ID -> weight)
 }
 
 // ServiceBehavior represents a behavior targeted at a specific service
@@ -119,20 +120,25 @@ func (b *Behavior) String() string {
 		parts = append(parts, b.Disk.String())
 	}
 
+	if b.UpstreamWeights != nil {
+		parts = append(parts, b.UpstreamWeights.String())
+	}
+
 	return strings.Join(parts, ",")
 }
 
 // mergeBehaviors combines two behaviors (b2 takes precedence over b1)
 func mergeBehaviors(b1, b2 *Behavior) *Behavior {
 	return &Behavior{
-		Latency:     mergeField(b1.Latency, b2.Latency),
-		Error:       mergeField(b1.Error, b2.Error),
-		CPU:         mergeField(b1.CPU, b2.CPU),
-		Memory:      mergeField(b1.Memory, b2.Memory),
-		Panic:       mergeField(b1.Panic, b2.Panic),
-		CrashIfFile: mergeField(b1.CrashIfFile, b2.CrashIfFile),
-		ErrorIfFile: mergeField(b1.ErrorIfFile, b2.ErrorIfFile),
-		Disk:        mergeField(b1.Disk, b2.Disk),
+		Latency:         mergeField(b1.Latency, b2.Latency),
+		Error:           mergeField(b1.Error, b2.Error),
+		CPU:             mergeField(b1.CPU, b2.CPU),
+		Memory:          mergeField(b1.Memory, b2.Memory),
+		Panic:           mergeField(b1.Panic, b2.Panic),
+		CrashIfFile:     mergeField(b1.CrashIfFile, b2.CrashIfFile),
+		ErrorIfFile:     mergeField(b1.ErrorIfFile, b2.ErrorIfFile),
+		Disk:            mergeField(b1.Disk, b2.Disk),
+		UpstreamWeights: mergeField(b1.UpstreamWeights, b2.UpstreamWeights),
 	}
 }
 

@@ -75,7 +75,7 @@ func (s *Server) Call(ctx context.Context, req *pb.CallRequest) (*pb.ServiceResp
 	}
 
 	// Process request with handler (behavior execution)
-	resp, earlyExit, err := s.handler.ProcessRequest(reqCtx, "grpc")
+	processResult, err := s.handler.ProcessRequest(reqCtx, "grpc")
 	if err != nil {
 		s.telemetry.Logger.Error("Failed to process request", zap.Error(err))
 		span.RecordError(err)
@@ -85,25 +85,25 @@ func (s *Server) Call(ctx context.Context, req *pb.CallRequest) (*pb.ServiceResp
 	}
 
 	// If early exit (behavior triggered error), return response
-	if earlyExit {
-		statusCode := int(resp.Code)
+	if processResult.EarlyExit {
+		statusCode := int(processResult.Response.Code)
 		grpcCode := httpToGRPCCode(statusCode)
 
 		span.SetAttributes(
 			semconv.RPCGRPCStatusCodeKey.Int(int(grpcCode)),
 			semconv.ErrorTypeKey.String(fmt.Sprintf("grpc_%d", statusCode)),
 		)
-		span.SetStatus(codes.Error, resp.Body)
-		return resp, nil
+		span.SetStatus(codes.Error, processResult.Response.Body)
+		return processResult.Response, nil
 	}
+
+	// Use effective behaviors applied (includes defaults like upstreamWeights)
+	behaviorsApplied := processResult.BehaviorsApplied
 
 	// Call upstreams (all configured upstreams for gRPC)
-	behaviorStr := req.Behavior
-	if behaviorStr == "" {
-		behaviorStr = s.config.DefaultBehavior
-	}
-
-	upstreamCalls, err := s.handler.CallUpstreams(ctx, behaviorStr, nil)
+	// - behaviorsApplied: used for routing decisions (includes defaults)
+	// - req.Behavior: propagated to downstream (external behavior only)
+	upstreamCalls, err := s.handler.CallUpstreams(ctx, behaviorsApplied, req.Behavior, nil)
 	if err != nil {
 		s.telemetry.Logger.Error("Failed to call upstreams", zap.Error(err))
 		span.RecordError(err)
@@ -113,11 +113,8 @@ func (s *Server) Call(ctx context.Context, req *pb.CallRequest) (*pb.ServiceResp
 	}
 
 	// Check if any upstream returned non-2xx (excluding connection errors where Code=0)
+	var resp *pb.ServiceResponse
 	if failedCall := s.handler.CheckUpstreamFailures(upstreamCalls); failedCall != nil {
-		var behaviorsApplied string
-		if behaviorStr != "" {
-			behaviorsApplied = behaviorStr
-		}
 		resp = s.handler.BuildUpstreamErrorResponse(reqCtx, "grpc", failedCall, behaviorsApplied, upstreamCalls)
 
 		span.SetAttributes(semconv.RPCGRPCStatusCodeKey.Int(int(grpc_codes.Unavailable)))
@@ -132,10 +129,6 @@ func (s *Server) Call(ctx context.Context, req *pb.CallRequest) (*pb.ServiceResp
 	}
 
 	// Build success response
-	var behaviorsApplied string
-	if behaviorStr != "" {
-		behaviorsApplied = behaviorStr
-	}
 	resp = s.handler.BuildSuccessResponse(reqCtx, "grpc", behaviorsApplied, upstreamCalls)
 
 	span.SetAttributes(semconv.RPCGRPCStatusCodeKey.Int(int(grpc_codes.OK)))

@@ -24,9 +24,20 @@ type ProviderConfig struct {
 
 // UpstreamRoute defines an upstream service with optional path-based routing
 type UpstreamRoute struct {
-	Name  string   `yaml:"name"`
-	Match []string `yaml:"match,omitempty"` // Incoming paths that trigger routing to this upstream (HTTP callers only)
-	Path  string   `yaml:"path,omitempty"`  // Explicit forward path to call on upstream (HTTP upstreams only), defaults to "/"
+	Name        string   `yaml:"name"`              // Unique ID for this upstream entry (used for behavior targeting)
+	Service     string   `yaml:"service,omitempty"` // Target service name (defaults to Name if not specified)
+	Match       []string `yaml:"match,omitempty"`   // Incoming paths that trigger routing to this upstream (HTTP callers only)
+	Path        string   `yaml:"path,omitempty"`    // Explicit forward path to call on upstream (HTTP upstreams only), defaults to "/"
+	Group       string   `yaml:"group,omitempty"`   // Weighted selection group - upstreams in same group are mutually exclusive
+	Probability float64  `yaml:"probability,omitempty"` // Independent call probability (0.0-1.0), only for ungrouped upstreams
+}
+
+// EffectiveService returns the target service name (Service if set, otherwise Name)
+func (u *UpstreamRoute) EffectiveService() string {
+	if u.Service != "" {
+		return u.Service
+	}
+	return u.Name
 }
 
 // ServiceConfig defines a service
@@ -56,10 +67,11 @@ type PortsConfig struct {
 
 // BehaviorConfig defines default behavior for a service
 type BehaviorConfig struct {
-	Latency   string  `yaml:"latency,omitempty"`
-	ErrorRate float64 `yaml:"errorRate,omitempty"`
-	CPU       string  `yaml:"cpu,omitempty"`
-	Memory    string  `yaml:"memory,omitempty"`
+	Latency         string         `yaml:"latency,omitempty"`
+	ErrorRate       float64        `yaml:"errorRate,omitempty"`
+	CPU             string         `yaml:"cpu,omitempty"`
+	Memory          string         `yaml:"memory,omitempty"`
+	UpstreamWeights map[string]int `yaml:"upstreamWeights,omitempty"` // Weights for grouped upstreams (ID -> weight)
 }
 
 // StorageConfig defines storage requirements
@@ -302,24 +314,27 @@ func (s *ServiceConfig) UnmarshalYAML(unmarshal func(interface{}) error) error {
 				switch v[0].(type) {
 				case string:
 					// Simple format: []string (just upstream names)
+					// Name is both the ID and the service name
 					s.Upstreams = make([]UpstreamRoute, 0, len(v))
 					for _, item := range v {
 						if str, ok := item.(string); ok {
 							s.Upstreams = append(s.Upstreams, UpstreamRoute{
-								Name:  str,
-								Match: nil,
-								Path:  "",
+								Name: str,
+								// Service left empty - EffectiveService() returns Name
 							})
 						}
 					}
 				case map[string]interface{}:
-					// Full format: []UpstreamRoute with match/path
+					// Full format: []UpstreamRoute with optional fields
 					s.Upstreams = make([]UpstreamRoute, 0, len(v))
 					for _, item := range v {
 						if m, ok := item.(map[string]interface{}); ok {
 							route := UpstreamRoute{}
 							if name, ok := m["name"].(string); ok {
 								route.Name = name
+							}
+							if service, ok := m["service"].(string); ok {
+								route.Service = service
 							}
 							if match, ok := m["match"].([]interface{}); ok {
 								route.Match = make([]string, 0, len(match))
@@ -331,6 +346,12 @@ func (s *ServiceConfig) UnmarshalYAML(unmarshal func(interface{}) error) error {
 							}
 							if path, ok := m["path"].(string); ok {
 								route.Path = path
+							}
+							if group, ok := m["group"].(string); ok {
+								route.Group = group
+							}
+							if prob, ok := m["probability"].(float64); ok {
+								route.Probability = prob
 							}
 							s.Upstreams = append(s.Upstreams, route)
 						}

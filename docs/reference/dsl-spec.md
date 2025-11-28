@@ -205,34 +205,56 @@ upstreams:
   - database
 ```
 
-### Advanced Format (with URLs)
+### Advanced Format
 
-Explicit URLs and optional path routing:
+Explicit routing with path matching, forward paths, and weighted groups:
 
 ```yaml
 upstreams:
-  - name: order-api
-    url: grpc://order-api.orders.svc.cluster.local:9090
-    paths: [/orders, /cart]
-  - name: product-api
-    url: http://product-api.products.svc.cluster.local:8080
-    paths: [/products]
+  - name: order-api           # Unique ID (also used as service name if service omitted)
+    match: [/orders, /cart]   # Incoming paths that trigger this upstream
+  - name: payment-ok          # Unique ID for behavior targeting
+    service: message-bus      # Target service name
+    path: /events/PaymentOK   # Forward path to call
+    group: payment-outcome    # Weighted selection group
+  - name: payment-fail
+    service: message-bus
+    path: /events/PaymentFail
+    group: payment-outcome
 ```
 
 ### Fields
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
-| `name` | string | Yes | Upstream service name |
-| `url` | string | No | Full URL (auto-generated if omitted) |
-| `paths` | []string | No | HTTP path prefixes for routing |
+| `name` | string | Yes | Unique ID for this upstream entry (used for behavior targeting) |
+| `service` | string | No | Target service name (defaults to `name`) |
+| `match` | []string | No | Incoming HTTP path prefixes that trigger this upstream |
+| `path` | string | No | Explicit forward path to call on upstream |
+| `group` | string | No | Weighted selection group - upstreams in same group are mutually exclusive |
+| `probability` | float | No | Independent call probability (0.0-1.0), only for ungrouped upstreams |
+
+### Weighted Groups
+
+Upstreams with the same `group` are mutually exclusive - only one is called per request, selected based on weights.
+
+Default: equal distribution within group. Override via behavior:
+
+```yaml
+behavior:
+  upstreamWeights:
+    payment-ok: 85
+    payment-fail: 15
+```
+
+Or at runtime: `?behavior=upstreamWeights=payment-ok:85;payment-fail:15`
 
 ### URL Generation
 
-If `url` is omitted, it's generated as:
+URLs are auto-generated based on the target service:
 
-- HTTP: `http://<name>.<namespace>.svc.cluster.local:<http-port>`
-- gRPC: `grpc://<name>.<namespace>.svc.cluster.local:<grpc-port>`
+- HTTP: `http://<service>.<namespace>.svc.cluster.local:<http-port>`
+- gRPC: `grpc://<service>.<namespace>.svc.cluster.local:<grpc-port>`
 
 ## Behavior Configuration
 
@@ -246,6 +268,7 @@ Default behaviors applied to all requests for this service.
 | `errorRate` | float | Error probability (0.0-1.0) | `0.05` (5%) |
 | `cpu` | string | CPU pattern | `"spike:5s:80"` |
 | `memory` | string | Memory pattern | `"leak-slow:10m"` |
+| `upstreamWeights` | map[string]int | Weights for grouped upstreams | see below |
 
 ### Example
 
@@ -255,8 +278,31 @@ services:
     behavior:
       latency: "10-50ms"
       errorRate: 0.02
-      cpu: "200m"
 ```
+
+### Upstream Weights
+
+For services with grouped upstreams, specify weights:
+
+```yaml
+services:
+  - name: payment
+    upstreams:
+      - name: payment-ok
+        service: message-bus
+        path: /events/PaymentOK
+        group: outcome
+      - name: payment-fail
+        service: message-bus
+        path: /events/PaymentFail
+        group: outcome
+    behavior:
+      upstreamWeights:
+        payment-ok: 85
+        payment-fail: 15
+```
+
+Weights are relative. Unspecified upstreams in a group share remaining weight equally.
 
 ## Storage Configuration
 
